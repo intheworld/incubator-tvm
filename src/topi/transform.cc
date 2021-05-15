@@ -23,8 +23,9 @@
  */
 #include <tvm/runtime/packed_func.h>
 #include <tvm/runtime/registry.h>
+#include <tvm/topi/einsum.h>
 #include <tvm/topi/transform.h>
-#include <tvm/topi/util.h>
+#include <tvm/topi/utils.h>
 
 namespace tvm {
 namespace topi {
@@ -86,13 +87,16 @@ TVM_REGISTER_GLOBAL("topi.layout_transform").set_body([](TVMArgs args, TVMRetVal
 });
 
 TVM_REGISTER_GLOBAL("topi.take").set_body([](TVMArgs args, TVMRetValue* rv) {
-  if (args.size() == 3) {
-    std::string mode = args[2];
-    *rv = take(args[0], args[1], mode);
-  } else {
-    int axis = args[2];
+  if (args.size() == 4) {
     std::string mode = args[3];
-    *rv = take(args[0], args[1], axis, mode);
+    int batch_dims = args[2];
+    *rv = take(args[0], args[1], batch_dims, mode);
+  } else {
+    ICHECK_EQ(args.size(), 5) << "topi.take expects 4 or 5 arguments";
+    int batch_dims = args[2];
+    int axis = args[3];
+    std::string mode = args[4];
+    *rv = take(args[0], args[1], batch_dims, axis, mode);
   }
 });
 
@@ -150,7 +154,7 @@ TVM_REGISTER_GLOBAL("topi.matmul").set_body([](TVMArgs args, TVMRetValue* rv) {
       *rv = matmul(args[0], args[1], args[2], args[3]);
       break;
     default:
-      CHECK(0) << "topi.matmul expects 2, 3 or 4 arguments";
+      ICHECK(0) << "topi.matmul expects 2, 3 or 4 arguments";
   }
 });
 
@@ -165,8 +169,16 @@ TVM_REGISTER_GLOBAL("topi.tensordot").set_body([](TVMArgs args, TVMRetValue* rv)
   }
 });
 
+TVM_REGISTER_GLOBAL("topi.einsum").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = einsum(args[0], args[1]);
+});
+
 TVM_REGISTER_GLOBAL("topi.strided_slice").set_body([](TVMArgs args, TVMRetValue* rv) {
   *rv = strided_slice(args[0], args[1], args[2], args[3], args[4]);
+});
+
+TVM_REGISTER_GLOBAL("topi.dynamic_strided_slice").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = dynamic_strided_slice(args[0], args[1], args[2], args[3]);
 });
 
 TVM_REGISTER_GLOBAL("topi.one_hot").set_body([](TVMArgs args, TVMRetValue* rv) {

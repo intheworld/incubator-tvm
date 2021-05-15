@@ -24,7 +24,6 @@
 #include <tvm/runtime/packed_func.h>
 #include <tvm/runtime/registry.h>
 #include <tvm/topi/nn.h>
-#include <tvm/topi/nn/batch_matmul.h>
 #include <tvm/topi/nn/bias_add.h>
 #include <tvm/topi/nn/bnn.h>
 #include <tvm/topi/nn/dense.h>
@@ -58,6 +57,14 @@ TVM_REGISTER_GLOBAL("topi.nn.pad").set_body([](TVMArgs args, TVMRetValue* rv) {
   *rv = pad(args[0], args[1], args[2], args[3]);
 });
 
+TVM_REGISTER_GLOBAL("topi.nn.space_to_batch_nd").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = space_to_batch_nd(args[0], args[1], args[2], args[3], args[4]);
+});
+
+TVM_REGISTER_GLOBAL("topi.nn.batch_to_space_nd").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = batch_to_space_nd(args[0], args[1], args[2], args[3]);
+});
+
 /* Ops from nn/dense.h */
 TVM_REGISTER_GLOBAL("topi.nn.dense").set_body([](TVMArgs args, TVMRetValue* rv) {
   *rv = nn::dense(args[0], args[1], args[2], args[3]);
@@ -66,11 +73,6 @@ TVM_REGISTER_GLOBAL("topi.nn.dense").set_body([](TVMArgs args, TVMRetValue* rv) 
 /* Ops from nn/bias_add.h */
 TVM_REGISTER_GLOBAL("topi.nn.bias_add").set_body([](TVMArgs args, TVMRetValue* rv) {
   *rv = nn::bias_add(args[0], args[1], args[2]);
-});
-
-/* Ops from nn/batch_matmul.h */
-TVM_REGISTER_GLOBAL("topi.nn.batch_matmul").set_body([](TVMArgs args, TVMRetValue* rv) {
-  *rv = nn::batch_matmul(args[0], args[1]);
 });
 
 /* Ops from nn/dilate.h */
@@ -93,11 +95,6 @@ TVM_REGISTER_GLOBAL("topi.nn.scale_shift_nhwc").set_body([](TVMArgs args, TVMRet
 });
 
 /* Ops from nn/pooling.h */
-TVM_REGISTER_GLOBAL("topi.nn.pool").set_body([](TVMArgs args, TVMRetValue* rv) {
-  *rv = nn::pool(args[0], args[1], args[2], args[3],
-                 static_cast<nn::PoolType>(static_cast<int>(args[4])), args[5], args[6], args[7]);
-});
-
 TVM_REGISTER_GLOBAL("topi.nn.pool_grad").set_body([](TVMArgs args, TVMRetValue* rv) {
   *rv = nn::pool_grad(args[0], args[1], args[2], args[3], args[4],
                       static_cast<nn::PoolType>(static_cast<int>(args[5])), args[6], args[7],
@@ -119,13 +116,18 @@ TVM_REGISTER_GLOBAL("topi.nn.adaptive_pool3d").set_body([](TVMArgs args, TVMRetV
 });
 
 TVM_REGISTER_GLOBAL("topi.nn.pool1d").set_body([](TVMArgs args, TVMRetValue* rv) {
-  *rv = nn::pool1d(args[0], args[1], args[2], args[3],
-                   static_cast<nn::PoolType>(static_cast<int>(args[4])), args[5], args[6], args[7]);
+  *rv = nn::pool1d(args[0], args[1], args[2], args[3], args[4],
+                   static_cast<nn::PoolType>(static_cast<int>(args[5])), args[6], args[7], args[8]);
+});
+
+TVM_REGISTER_GLOBAL("topi.nn.pool2d").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = nn::pool2d(args[0], args[1], args[2], args[3], args[4],
+                   static_cast<nn::PoolType>(static_cast<int>(args[5])), args[6], args[7], args[8]);
 });
 
 TVM_REGISTER_GLOBAL("topi.nn.pool3d").set_body([](TVMArgs args, TVMRetValue* rv) {
-  *rv = nn::pool3d(args[0], args[1], args[2], args[3],
-                   static_cast<nn::PoolType>(static_cast<int>(args[4])), args[5], args[6], args[7]);
+  *rv = nn::pool3d(args[0], args[1], args[2], args[3], args[4],
+                   static_cast<nn::PoolType>(static_cast<int>(args[5])), args[6], args[7], args[8]);
 });
 
 /* Ops from nn/softmax.h */

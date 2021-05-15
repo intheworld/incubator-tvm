@@ -27,7 +27,7 @@
 #include <tvm/tir/stmt_functor.h>
 #include <tvm/tir/transform.h>
 
-#include "ir_util.h"
+#include "ir_utils.h"
 
 namespace tvm {
 namespace tir {
@@ -88,7 +88,7 @@ class AttrScopeLifter : public StmtMutator {
     if (attr_node.size() == 0) return ret;
 
     op = ret.as<SeqStmtNode>();
-    CHECK(op != nullptr);
+    ICHECK(op != nullptr);
     Array<Stmt> reorg;
     // check if all decorations are common.
     for (size_t begin = 0; begin < attr_node.size();) {
@@ -155,6 +155,12 @@ class AttrScopeLifter : public StmtMutator {
         return IfThenElse(op->condition, then_case, else_case);
       }
     }
+  }
+
+  Stmt VisitStmt_(const WhileNode* op) final {
+    // TODO(masahi): Do we need a special handling for While nodes?
+    LOG(FATAL) << "WhileNode not supported in LiftAttrScope.";
+    return Stmt();
   }
 
  private:

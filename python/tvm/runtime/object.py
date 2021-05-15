@@ -28,8 +28,10 @@ try:
         raise ImportError()
     from tvm._ffi._cy3.core import _set_class_object, _set_class_object_generic
     from tvm._ffi._cy3.core import ObjectBase, PyNativeObject
-except (RuntimeError, ImportError):
+except (RuntimeError, ImportError) as error:
     # pylint: disable=wrong-import-position,unused-import
+    if _FFI_MODE == "cython":
+        raise error
     from tvm._ffi._ctypes.packed_func import _set_class_object, _set_class_object_generic
     from tvm._ffi._ctypes.object import ObjectBase, PyNativeObject
 
@@ -54,6 +56,9 @@ class Object(ObjectBase):
         return sorted([fnames(i) for i in range(size)] + class_names)
 
     def __getattr__(self, name):
+        if name in self.__slots__:
+            raise AttributeError(f"{name} is not set")
+
         try:
             return _ffi_node_api.NodeGetAttr(self, name)
         except AttributeError:

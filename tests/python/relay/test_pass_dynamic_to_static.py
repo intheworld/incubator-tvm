@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 import numpy as np
+import pytest
 import tvm
 from tvm import te
 from tvm import relay
@@ -36,10 +37,10 @@ def run_opt_pass(expr, opt_pass):
 
 def verify_func(func, data, ref_res, rtol=1e-5, atol=1e-7):
     assert isinstance(data, list)
-    for target, ctx in tvm.testing.enabled_targets():
+    for target, dev in tvm.testing.enabled_targets():
         for kind in ["graph", "vm", "debug"]:
             mod = tvm.ir.IRModule.from_expr(func)
-            intrp = relay.create_executor(kind, mod=mod, ctx=ctx, target=target)
+            intrp = relay.create_executor(kind, mod=mod, device=dev, target=target)
             op_res = intrp.evaluate()(*data)
             tvm.testing.assert_allclose(op_res.asnumpy(), ref_res, rtol=rtol, atol=atol)
 
@@ -175,12 +176,12 @@ def test_dynamic_to_static_topk():
         assert isinstance(zz, relay.Call)
         assert zz.op == relay.op.get("topk")
 
-        for target, ctx in tvm.testing.enabled_targets():
+        for target, dev in tvm.testing.enabled_targets():
             if "llvm" not in target:
                 continue
             for kind in ["graph", "vm", "debug"]:
                 mod = tvm.ir.IRModule.from_expr(func2)
-                intrp = relay.create_executor(kind, mod=mod, ctx=ctx, target=target)
+                intrp = relay.create_executor(kind, mod=mod, device=dev, target=target)
                 op_res = intrp.evaluate()(np_data)
                 if ret_type == "both":
                     tvm.testing.assert_allclose(op_res[0].asnumpy(), np_values)
@@ -231,11 +232,11 @@ def test_dynamic_to_static_zeros_ones():
 
             func = run_infer_type(relay.Function([x], y))
             func2 = run_opt_pass(
-                run_opt_pass(func, transform.DynamicToStatic()), transform.InferType()
+                run_opt_pass(func, transform.DynamicToStatic()),
+                transform.InferType(),
             )
 
             zz = func2.body
-            assert isinstance(zz, relay.Constant)
             assert zz.checked_type == relay.ty.TensorType(shape, dtype)
 
             x_data = np.random.uniform(low=1, high=1, size=shape)
@@ -457,17 +458,105 @@ def test_dynamic_to_static_strided_slice():
     verify((3, 4, 3), [1, 0, 0], [-1, 2, 3], [1, 1, 1], (2, 2, 3), slice_mode="size", test_ref=True)
 
 
+@tvm.testing.uses_gpu
+def test_dyn_to_static_sparse_to_dense():
+    def verify_sparse_to_dense(sparse_indices, sparse_values, default_value, output_shape, xpected):
+        sparse_indices_data = np.array(sparse_indices)
+        sparse_values_data = np.array(sparse_values)
+        default_value_data = np.array(default_value)
+        output_shape_data = np.array(output_shape)
+
+        a = relay.var(
+            "a", relay.TensorType(sparse_indices_data.shape, str(sparse_indices_data.dtype))
+        )
+        b = relay.var(
+            "b", relay.TensorType(sparse_values_data.shape, str(sparse_values_data.dtype))
+        )
+        output_shape_const = relay.const(output_shape_data)
+
+        if default_value is None:
+            args = [a, b]
+            d = relay.sparse_to_dense(a, output_shape_const, b)
+        else:
+            c = relay.var(
+                "c", relay.TensorType(default_value_data.shape, str(default_value_data.dtype))
+            )
+            args = [a, b, c]
+            d = relay.sparse_to_dense(a, output_shape_const, b, c)
+
+        zz = run_infer_type(d)
+        assert len(zz.checked_type.shape) == len(output_shape)
+
+        func = relay.Function(args, d)
+
+        func2 = run_opt_pass(run_opt_pass(func, transform.DynamicToStatic()), transform.InferType())
+        assert isinstance(func2.body, relay.Call)
+        assert func2.body.op == relay.op.get("sparse_to_dense")
+
+        if default_value is None:
+            arguments = [sparse_indices_data, sparse_values_data]
+        else:
+            arguments = [sparse_indices_data, sparse_values_data, default_value_data]
+
+        verify_func(func2, arguments, xpected)
+
+    verify_sparse_to_dense(1, 3, 0, [5], [0, 3, 0, 0, 0])  # scalar
+    verify_sparse_to_dense([0, 1, 4], [3, 3, 3], 0, [5], [3, 3, 0, 0, 3])  # vector
+    verify_sparse_to_dense(
+        [[0, 0], [1, 2]], [1, 2], 0, [3, 4], [[1, 0, 0, 0], [0, 0, 2, 0], [0, 0, 0, 0]]
+    )  # nXd
+    verify_sparse_to_dense(
+        [[0, 0, 0], [1, 2, 3]],
+        [1, 2],
+        4,
+        [2, 3, 4],
+        [[[1, 4, 4, 4], [4, 4, 4, 4], [4, 4, 4, 4]], [[4, 4, 4, 4], [4, 4, 4, 4], [4, 4, 4, 2]]],
+    )  # nXd
+    verify_sparse_to_dense(
+        [0, 1, 4], [3.1, 3.1, 3.1], 3.5, [5], [3.1, 3.1, 3.5, 3.5, 3.1]
+    )  # floats
+    verify_sparse_to_dense(1, 3, None, [5], [0, 3, 0, 0, 0])  # default value not specified
+
+
+@tvm.testing.uses_gpu
+def test_dynamic_to_static_dynamic_rank():
+    def verify_full(fill_value, fill_shape, dtype):
+        x = relay.var("x", relay.scalar_type(dtype))
+        y = relay.var("y", relay.TensorType(fill_shape, "int64"))
+        shape = relay.shape_of(y)
+        shape = relay.strided_slice(shape, [0], relay.shape_of(shape))
+        z = relay.full(x, shape, dtype)
+
+        func = relay.Function([x, y], z)
+        func2 = run_opt_pass(run_opt_pass(func, transform.DynamicToStatic()), transform.InferType())
+
+        zz = func2.body
+        assert isinstance(zz, relay.Call)
+        assert zz.op == relay.op.get("full")
+
+        ref_res = np.full(fill_shape, fill_value).astype(dtype)
+        y_data = np.random.uniform(low=-1, high=1, size=fill_shape).astype("int64")
+        verify_func(func2, [fill_value, y_data], ref_res)
+
+    verify_full(4, (1, 2, 3, 4), "int32")
+    verify_full(4.0, (1, 2, 8, 10), "float32")
+
+
+@tvm.testing.uses_gpu
+def test_dynamic_to_static_dynamic_if():
+    x = relay.var("x", relay.TensorType((2, 2), "int64"))
+    cond = relay.const(1)
+    iff = relay.If(cond, relay.reshape(x, [1, 4]), relay.reshape(x, (4, 1)))
+
+    func = relay.Function([x], iff)
+    func2 = run_opt_pass(run_opt_pass(func, transform.DynamicToStatic()), transform.InferType())
+
+    zz = func2.body
+    assert isinstance(zz, relay.Call)
+    assert zz.op == relay.op.get("reshape")
+    x_data = np.random.uniform(low=-1, high=1, size=(2, 2)).astype("int64")
+    verify_func(func2, [x_data], x_data.reshape(1, 4))
+
+
 if __name__ == "__main__":
-    test_dynamic_to_static_reshape()
-    test_dynamic_to_static_double_reshape()
-    test_dynamic_to_static_quad_reshape()
-    test_dynamic_to_static_tile()
-    test_dynamic_to_static_topk()
-    test_dynamic_to_static_broadcast_to()
-    test_dynamic_to_static_zeros_ones()
-    test_dynamic_to_static_resize()
-    test_dynamic_to_static_one_hot()
-    test_dynamic_to_static_full()
-    test_dynamic_to_static_upsampling()
-    test_dynamic_to_static_pad()
-    test_dynamic_to_static_strided_slice()
+    pytest.main([__file__])

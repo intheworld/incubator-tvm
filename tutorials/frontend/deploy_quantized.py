@@ -22,7 +22,7 @@ Deploy a Quantized Model on Cuda
 This article is an introductory tutorial of automatic quantization with TVM.
 Automatic quantization is one of the quantization modes in TVM. More details on
 the quantization story in TVM can be found
-`here <https://discuss.tvm.ai/t/quantization-story/3920>`_.
+`here <https://discuss.tvm.apache.org/t/quantization-story/3920>`_.
 In this tutorial, we will import a GluonCV pre-trained model on ImageNet to
 Relay, quantize the Relay model and then perform the inference.
 """
@@ -39,7 +39,7 @@ import os
 batch_size = 1
 model_name = "resnet18_v1"
 target = "cuda"
-ctx = tvm.context(target)
+dev = tvm.device(target)
 
 ###############################################################################
 # Prepare the Dataset
@@ -146,7 +146,7 @@ def quantize(mod, params, data_aware):
 # -------------
 # We create a Relay VM to build and execute the model.
 def run_inference(mod):
-    executor = relay.create_executor("vm", mod, ctx, target)
+    executor = relay.create_executor("vm", mod, dev, target)
     val_data, batch_fn = get_val_data()
     for i, batch in enumerate(val_data):
         data, label = batch_fn(batch)

@@ -44,6 +44,7 @@ ALLOW_EXTENSION = {
     "pyd",
     "pyx",
     "cu",
+    "bat",
     # relay text format
     "rly",
     # configurations
@@ -124,6 +125,26 @@ ALLOW_SPECIFIC_FILE = {
     "docs/_static/img/tvm-logo-square.png",
     # pytest config
     "pytest.ini",
+    # microTVM tests
+    "tests/micro/zephyr/testdata/digit-2.jpg",
+    "tests/micro/zephyr/testdata/digit-9.jpg",
+    "tests/micro/zephyr/testdata/mnist-8.onnx",
+    # microTVM Zephyr runtime
+    "apps/microtvm/zephyr/demo_runtime/prj.conf",
+    "apps/microtvm/zephyr/demo_runtime/boards/qemu_x86.conf",
+    "apps/microtvm/zephyr/demo_runtime/boards/qemu_riscv32.conf",
+    "apps/microtvm/zephyr/demo_runtime/boards/qemu_riscv64.conf",
+    "apps/microtvm/zephyr/demo_runtime/boards/nrf5340dk_nrf5340_cpuapp.conf",
+    "apps/microtvm/zephyr/demo_runtime/boards/nucleo_f746zg.conf",
+    "apps/microtvm/zephyr/demo_runtime/boards/stm32f746g_disco.conf",
+    "apps/microtvm/zephyr/demo_runtime/boards/mps2_an521.conf",
+    "apps/microtvm/zephyr/demo_runtime/qemu-hack/qemu-system-i386",
+    "apps/microtvm/zephyr/demo_runtime/qemu-hack/qemu-system-arm",
+    "apps/microtvm/zephyr/demo_runtime/qemu-hack/qemu-system-riscv32",
+    "apps/microtvm/zephyr/demo_runtime/qemu-hack/qemu-system-riscv64",
+    # microTVM Virtual Machines
+    "apps/microtvm/reference-vm/zephyr/Vagrantfile",
+    "apps/microtvm/reference-vm/zephyr/base-box/Vagrantfile.packer-template",
 }
 
 

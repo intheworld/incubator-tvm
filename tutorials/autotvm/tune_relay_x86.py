@@ -17,24 +17,26 @@
 """
 .. _tune_relay_x86:
 
-Auto-tuning a convolutional network for x86 CPU
+Auto-tuning a Convolutional Network for x86 CPU
 ===============================================
 **Author**: `Yao Wang <https://github.com/kevinthesun>`_, `Eddie Yan <https://github.com/eqy>`_
 
 This is a tutorial about how to tune convolution neural network
 for x86 CPU.
+
+Note that this tutorial will not run on Windows or recent versions of macOS. To
+get it to run, you will need to wrap the body of this tutorial in a :code:`if
+__name__ == "__main__":` block.
 """
 import os
 import numpy as np
 
 import tvm
-from tvm import te
-from tvm import autotvm
-from tvm import relay
+from tvm import relay, autotvm
 from tvm.relay import testing
 from tvm.autotvm.tuner import XGBTuner, GATuner, RandomTuner, GridSearchTuner
 from tvm.autotvm.graph_tuner import DPTuner, PBQPTuner
-import tvm.contrib.graph_runtime as runtime
+import tvm.contrib.graph_executor as runtime
 
 #################################################################
 # Define network
@@ -69,7 +71,7 @@ def get_network(name, batch_size):
             batch_size=batch_size, version="1.1", dtype=dtype
         )
     elif name == "inception_v3":
-        input_shape = (1, 3, 299, 299)
+        input_shape = (batch_size, 3, 299, 299)
         mod, params = relay.testing.inception_v3.get_workload(batch_size=batch_size, dtype=dtype)
     elif name == "mxnet":
         # an example for mxnet model
@@ -211,14 +213,14 @@ def tune_and_evaluate(tuning_opt):
             lib = relay.build_module.build(mod, target=target, params=params)
 
         # upload parameters to device
-        ctx = tvm.cpu()
+        dev = tvm.cpu()
         data_tvm = tvm.nd.array((np.random.uniform(size=data_shape)).astype(dtype))
-        module = runtime.GraphModule(lib["default"](ctx))
+        module = runtime.GraphModule(lib["default"](dev))
         module.set_input(input_name, data_tvm)
 
         # evaluate
         print("Evaluate inference time cost...")
-        ftimer = module.module.time_evaluator("run", ctx, number=100, repeat=3)
+        ftimer = module.module.time_evaluator("run", dev, number=100, repeat=3)
         prof_res = np.array(ftimer().results) * 1000  # convert to millisecond
         print(
             "Mean inference time (std dev): %.2f ms (%.2f ms)"

@@ -109,3 +109,22 @@ test("RegisterGlobal", () => {
   let syslib = tvm.systemLib();
   syslib.dispose();
 });
+
+test("NDArrayCbArg", () => {
+  let use_count = tvm.getGlobalFunc("testing.object_use_count");
+
+  let fcheck = tvm.toPackedFunc(function (x) {
+    assert(use_count(x) == 2);
+    x.dispose();
+  });
+  let x = tvm.empty([2], "float32").copyFrom([1, 2]);
+  assert(use_count(x) == 1);
+  fcheck(x);
+  assert(use_count(x) == 1);
+});
+
+test("Logging", () => {
+  const log_info = tvm.getGlobalFunc("testing.log_info_str");
+  log_info("helow world")
+  log_info.dispose();
+});

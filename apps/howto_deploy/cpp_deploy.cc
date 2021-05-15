@@ -31,7 +31,7 @@
 void Verify(tvm::runtime::Module mod, std::string fname) {
   // Get the function from the module.
   tvm::runtime::PackedFunc f = mod.GetFunction(fname);
-  CHECK(f != nullptr);
+  ICHECK(f != nullptr);
   // Allocate the DLPack data structures.
   //
   // Note that we use TVM runtime API to allocate the DLTensor in this example.
@@ -64,7 +64,7 @@ void Verify(tvm::runtime::Module mod, std::string fname) {
   f(x, y);
   // Print out the output
   for (int i = 0; i < shape[0]; ++i) {
-    CHECK_EQ(static_cast<float*>(y->data)[i], i + 1.0f);
+    ICHECK_EQ(static_cast<float*>(y->data)[i], i + 1.0f);
   }
   LOG(INFO) << "Finish verification...";
   TVMArrayFree(x);
@@ -83,20 +83,20 @@ void DeploySingleOp() {
   Verify(mod_syslib, "addonesys");
 }
 
-void DeployGraphRuntime() {
-  LOG(INFO) << "Running graph runtime...";
+void DeployGraphExecutor() {
+  LOG(INFO) << "Running graph executor...";
   // load in the library
-  DLContext ctx{kDLCPU, 0};
+  DLDevice dev{kDLCPU, 0};
   tvm::runtime::Module mod_factory = tvm::runtime::Module::LoadFromFile("lib/test_relay_add.so");
-  // create the graph runtime module
-  tvm::runtime::Module gmod = mod_factory.GetFunction("default")(ctx);
+  // create the graph executor module
+  tvm::runtime::Module gmod = mod_factory.GetFunction("default")(dev);
   tvm::runtime::PackedFunc set_input = gmod.GetFunction("set_input");
   tvm::runtime::PackedFunc get_output = gmod.GetFunction("get_output");
   tvm::runtime::PackedFunc run = gmod.GetFunction("run");
 
   // Use the C++ API
-  tvm::runtime::NDArray x = tvm::runtime::NDArray::Empty({2, 2}, DLDataType{kDLFloat, 32, 1}, ctx);
-  tvm::runtime::NDArray y = tvm::runtime::NDArray::Empty({2, 2}, DLDataType{kDLFloat, 32, 1}, ctx);
+  tvm::runtime::NDArray x = tvm::runtime::NDArray::Empty({2, 2}, DLDataType{kDLFloat, 32, 1}, dev);
+  tvm::runtime::NDArray y = tvm::runtime::NDArray::Empty({2, 2}, DLDataType{kDLFloat, 32, 1}, dev);
 
   for (int i = 0; i < 2; ++i) {
     for (int j = 0; j < 2; ++j) {
@@ -112,13 +112,13 @@ void DeployGraphRuntime() {
 
   for (int i = 0; i < 2; ++i) {
     for (int j = 0; j < 2; ++j) {
-      CHECK_EQ(static_cast<float*>(y->data)[i * 2 + j], i * 2 + j + 1);
+      ICHECK_EQ(static_cast<float*>(y->data)[i * 2 + j], i * 2 + j + 1);
     }
   }
 }
 
 int main(void) {
   DeploySingleOp();
-  DeployGraphRuntime();
+  DeployGraphExecutor();
   return 0;
 }

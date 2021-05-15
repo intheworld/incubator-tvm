@@ -21,13 +21,34 @@ import abc
 import glob
 import os
 import re
+import subprocess
 
-from tvm.contrib import binutil
 import tvm.target
-from . import build
 from . import class_factory
 from . import debugger
 from . import transport
+
+
+def run_cmd(cmd):
+    """Runs `cmd` in a subprocess and awaits its completion.
+
+    Parameters
+    ----------
+    cmd : List[str]
+        list of command-line arguments
+
+    Returns
+    -------
+    output : str
+        resulting stdout capture from the subprocess
+    """
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    (output, _) = proc.communicate()
+    output = output.decode("utf-8")
+    if proc.returncode != 0:
+        cmd_str = " ".join(cmd)
+        msg = f'error while running command "{cmd_str}":\n{output}'
+        raise RuntimeError(msg)
 
 
 class DetectTargetError(Exception):
@@ -60,6 +81,9 @@ class Compiler(metaclass=abc.ABCMeta):
         target_strs = set()
 
         for obj in sources:
+            if os.path.splitext(obj)[1] not in (".cc", ".c"):
+                continue
+
             with open(obj) as obj_f:
                 for line in obj_f:
                     m = cls.TVM_TARGET_RE.match(line)
@@ -74,7 +98,7 @@ class Compiler(metaclass=abc.ABCMeta):
             )
 
         target_str = next(iter(target_strs))
-        return tvm.target.create(target_str)
+        return tvm.target.Target(target_str)
 
     # Maps regexes identifying CPUs to the default toolchain prefix for that CPU.
     TOOLCHAIN_PREFIX_BY_CPU_REGEX = {
@@ -84,6 +108,12 @@ class Compiler(metaclass=abc.ABCMeta):
     }
 
     def _autodetect_toolchain_prefix(self, target):
+        # Treat absence of -mcpu as if -mcpu=native is specified. The gcc shipped with OS X
+        # complains if -mcpu=native is given, so this approach allows model targets to avoid
+        # specifying this flag e.g. for tutorials.
+        if "mcpu" not in target.attrs:
+            return self.TOOLCHAIN_PREFIX_BY_CPU_REGEX["native"]
+
         matches = []
         for regex, prefix in self.TOOLCHAIN_PREFIX_BY_CPU_REGEX.items():
             if re.match(regex, target.attrs["mcpu"]):
@@ -117,9 +147,11 @@ class Compiler(metaclass=abc.ABCMeta):
         opts = []
         # TODO use march for arm(https://gcc.gnu.org/onlinedocs/gcc/ARM-Options.html)?
         if target.attrs.get("mcpu"):
-            opts.append(f'-march={target.attrs["mcpu"]}')
+            opts.append(f'-mcpu={target.attrs["mcpu"]}')
         if target.attrs.get("mfpu"):
             opts.append(f'-mfpu={target.attrs["mfpu"]}')
+        if target.attrs.get("march"):
+            opts.append(f'-march={target.attrs["march"]}')
 
         return opts
 
@@ -217,7 +249,8 @@ class DefaultCompiler(Compiler):
             )
 
         prefix = self._autodetect_toolchain_prefix(target)
-        outputs = []
+        outputs = [s for s in sources if os.path.splitext(s)[1] == ".o"]
+        sources = [s for s in sources if s not in outputs]
         for src in sources:
             src_base, src_ext = os.path.splitext(os.path.basename(src))
 
@@ -232,13 +265,13 @@ class DefaultCompiler(Compiler):
 
             output_filename = f"{src_base}.o"
             output_abspath = os.path.join(output, output_filename)
-            binutil.run_cmd(args + ["-c", "-o", output_abspath, src])
+            run_cmd(args + ["-c", "-o", output_abspath, src])
             outputs.append(output_abspath)
 
         output_filename = f"{os.path.basename(output)}.a"
         output_abspath = os.path.join(output, output_filename)
-        binutil.run_cmd([prefix + "ar", "-r", output_abspath] + outputs)
-        binutil.run_cmd([prefix + "ranlib", output_abspath])
+        run_cmd([prefix + "ar", "-r", output_abspath] + outputs)
+        run_cmd([prefix + "ranlib", output_abspath])
 
         return tvm.micro.MicroLibrary(output, [output_filename])
 
@@ -261,7 +294,9 @@ class DefaultCompiler(Compiler):
         args.extend(["-g", "-o", output_abspath])
 
         if link_main:
-            host_main_srcs = glob.glob(os.path.join(build.CRT_ROOT_DIR, "host", "*.cc"))
+            host_main_srcs = glob.glob(
+                os.path.join(tvm.micro.get_standalone_crt_dir(), "template", "host", "*.cc")
+            )
             if main_options:
                 main_lib = self.library(os.path.join(output, "host"), host_main_srcs, main_options)
                 for lib_name in main_lib.library_files:
@@ -273,7 +308,7 @@ class DefaultCompiler(Compiler):
             for lib_name in obj.library_files:
                 args.append(obj.abspath(lib_name))
 
-        binutil.run_cmd(args)
+        run_cmd(args)
         return tvm.micro.MicroBinary(output, output_filename, [])
 
     @property
@@ -320,7 +355,7 @@ class HostFlasher(Flasher):
                 [micro_binary.abspath(micro_binary.binary_file)]
             )
             return transport.DebugWrapperTransport(
-                debugger=gdb_wrapper, transport=gdb_wrapper.Transport()
+                debugger=gdb_wrapper, transport=gdb_wrapper.transport()
             )
 
         return transport.SubprocessTransport([micro_binary.abspath(micro_binary.binary_file)])

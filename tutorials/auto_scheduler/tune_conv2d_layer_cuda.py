@@ -17,25 +17,31 @@
 """
 .. _auto-scheduler-conv-gpu:
 
-Auto-scheduling a convolution layer for GPU
+Auto-scheduling a Convolution Layer for GPU
 ===========================================
 **Author**: `Lianmin Zheng <https://github.com/merrymercy>`_, \
             `Chengfan Jia <https://github.com/jcf94/>`_
 
+This is a tutorial on how to use the auto-scheduler for GPUs.
 
-Different from the existing :ref:`autotvm <tutorials-autotvm-sec>` which relies on 
+Different from the template-based :ref:`autotvm <tutorials-autotvm-sec>` which relies on
 manual templates to define the search space, the auto-scheduler does not require any templates.
-The auto-scheduler is template-free, so users only need to write the computation declaration without
-any schedule commands or templates.
-The auto-scheduler can automatically generate a large
-search space and find a good schedule in the space.
+Users only need to write the computation declaration without any schedule commands or templates.
+The auto-scheduler can automatically generate a large search space and
+find a good schedule in the space.
 
 We use a convolution layer as an example in this tutorial.
+
+Note that this tutorial will not run on Windows or recent versions of macOS. To
+get it to run, you will need to wrap the body of this tutorial in a :code:`if
+__name__ == "__main__":` block.
 """
+
+import os
 
 import numpy as np
 import tvm
-from tvm import te, testing, auto_scheduler, topi
+from tvm import te, auto_scheduler, topi
 from tvm.topi.testing import conv2d_nchw_python
 
 ######################################################################
@@ -63,23 +69,26 @@ def conv2d_layer(N, H, W, CO, CI, KH, KW, stride, padding):
 
 target = tvm.target.Target("cuda")
 
-# the last layer in resnet
+# Use the last layer in ResNet-50
 N, H, W, CO, CI, KH, KW, strides, padding = 1, 7, 7, 512, 512, 3, 3, (1, 1), (1, 1)
-task = auto_scheduler.create_task(conv2d_layer, (N, H, W, CO, CI, KH, KW, strides, padding), target)
+task = auto_scheduler.SearchTask(
+    func=conv2d_layer, args=(N, H, W, CO, CI, KH, KW, strides, padding), target=target
+)
 
 # Inspect the computational graph
+print("Computational DAG:")
 print(task.compute_dag)
 
 ######################################################################
 # Next, we set parameters for the auto-scheduler. These parameters
-# mainly specify how we do the measurement during the search and auto-tuning.
+# mainly specify how we do the measurement during the search.
 #
-# * :code:`measure_ctx` launches a different process for measurement. This
-#   provides an isolation. It can protect the master process from GPU crashes
-#   happended during measurement and avoid other runtime conflicts.
+# * :code:`measure_ctx` launches a different process for measurement to
+#   provide isolation. It can protect the master process from GPU crashes
+#   during measurement and avoid other runtime conflicts.
 # * :code:`min_repeat_ms` defines the minimum duration of one "repeat" in every measurement.
 #   This can warmup the GPU, which is necessary to get accurate measurement results.
-#   Typically, we recommend a value > 300 ms.
+#   Typically, we recommend a value >= 300 ms.
 # * :code:`num_measure_trials` is the number of measurement trials we can use during the search.
 #   We only make 10 trials in this tutorial for a fast demonstration. In practice, 1000 is a
 #   good value for the search to converge. You can do more trials according to your time budget.
@@ -89,11 +98,13 @@ print(task.compute_dag)
 # * see :any:`auto_scheduler.TuningOptions`,
 #   :any:`auto_scheduler.LocalRPCMeasureContext` for more parameters.
 
+log_file = "conv2d.json"
 measure_ctx = auto_scheduler.LocalRPCMeasureContext(min_repeat_ms=300)
 tune_option = auto_scheduler.TuningOptions(
-    num_measure_trials=10,
+    num_measure_trials=10,  # change this to 1000 to achieve the best performance
     runner=measure_ctx.runner,
-    measure_callbacks=[auto_scheduler.RecordToFile("conv2d.json")],
+    measure_callbacks=[auto_scheduler.RecordToFile(log_file)],
+    verbose=2,
 )
 
 ######################################################################
@@ -101,15 +112,23 @@ tune_option = auto_scheduler.TuningOptions(
 # ^^^^^^^^^^^^^^
 # Now we get all inputs ready. Pretty simple, isn't it?
 # We can kick off the search and let the auto-scheduler do its magic.
-# After some measurement trials, it will return the best schedule it found.
+# After some measurement trials, we can load the best schedule from the log
+# file and apply it.
 
-sch, args = auto_scheduler.auto_schedule(task, tuning_options=tune_option)
+# Run auto-tuning (search)
+task.tune(tune_option)
+# Apply the best schedule
+sch, args = task.apply_best(log_file)
+
+# Kill the measurement process
+del measure_ctx
 
 ######################################################################
 # We can lower the schedule to see the IR after auto-scheduling.
 # The auto-scheduler correctly performs optimizations including multi-level tiling,
 # cooperative fetching, unrolling and operator fusion.
 
+print("Lowered TIR:")
 print(tvm.lower(sch, args, simple_mode=True))
 
 ######################################################################
@@ -119,25 +138,25 @@ print(tvm.lower(sch, args, simple_mode=True))
 
 func = tvm.build(sch, args, target)
 
-# check correctness
+# Check correctness
 data_np = np.random.uniform(size=(N, CI, H, W)).astype(np.float32)
 weight_np = np.random.uniform(size=(CO, CI, KH, KW)).astype(np.float32)
 bias_np = np.random.uniform(size=(1, CO, 1, 1)).astype(np.float32)
 conv_np = conv2d_nchw_python(data_np, weight_np, strides, padding)
 out_np = np.maximum(conv_np + bias_np, 0.0)
 
-ctx = tvm.gpu()
-data_tvm = tvm.nd.array(data_np, ctx=ctx)
-weight_tvm = tvm.nd.array(weight_np, ctx=ctx)
-bias_tvm = tvm.nd.array(bias_np, ctx=ctx)
-out_tvm = tvm.nd.empty(out_np.shape, ctx=ctx)
+dev = tvm.cuda()
+data_tvm = tvm.nd.array(data_np, device=dev)
+weight_tvm = tvm.nd.array(weight_np, device=dev)
+bias_tvm = tvm.nd.array(bias_np, device=dev)
+out_tvm = tvm.nd.empty(out_np.shape, device=dev)
 func(data_tvm, weight_tvm, bias_tvm, out_tvm)
 
 # Check results
-tvm.testing.assert_allclose(out_np, out_tvm.asnumpy(), rtol=1e-3)
+np.testing.assert_allclose(out_np, out_tvm.asnumpy(), rtol=1e-3)
 
 # Evaluate execution time
-evaluator = func.time_evaluator(func.entry_name, ctx, min_repeat_ms=500)
+evaluator = func.time_evaluator(func.entry_name, dev, min_repeat_ms=500)
 print(
     "Execution time of this operator: %.3f ms"
     % (np.median(evaluator(data_tvm, weight_tvm, bias_tvm, out_tvm).results) * 1000)
@@ -146,26 +165,20 @@ print(
 ######################################################################
 # Using the record file
 # ^^^^^^^^^^^^^^^^^^^^^
-# During the search, all measuremnt records are dumpped into the record
+# During the search, all measurement records are dumped into the record
 # file "conv2d.json". The measurement records can be used to re-apply search results,
 # resume the search, and perform other analyses.
 
 ######################################################################
 # Here is an example where we load the best schedule from a file,
-# print the equivalent python schedule API, and build the binary again.
+# print the equivalent python schedule API and CUDA source code.
+# They can be used for debugging and learning the behavior of the auto-scheduler.
 
-# Load the measuremnt record for the best schedule
-inp, res = auto_scheduler.load_best("conv2d.json", task.workload_key)
-
-# Print equivalent python schedule API. This can be used for debugging and
-# learning the behavior of the auto-scheduler.
 print("Equivalent python schedule:")
-print(task.compute_dag.print_python_code_from_state(inp.state))
+print(task.print_best(log_file, print_mode="schedule"))
 
-# Rebuild the binary. This shows how you can apply the best schedule from a
-# log file without reruning the search again.
-sch, args = task.compute_dag.apply_steps_from_state(inp.state)
-func = tvm.build(sch, args, target)
+print("CUDA source code:")
+print(task.print_best(log_file, print_mode="cuda"))
 
 ######################################################################
 # A more complicated example is to resume the search.
@@ -174,18 +187,23 @@ func = tvm.build(sch, args, target)
 # In the example below we resume the status and do more 5 trials.
 
 
-log_file = "conv2d.json"
-cost_model = auto_scheduler.XGBModel()
-cost_model.update_from_file(log_file)
-search_policy = auto_scheduler.SketchPolicy(
-    task, cost_model, init_search_callbacks=[auto_scheduler.PreloadMeasuredStates(log_file)]
-)
-tune_option = auto_scheduler.TuningOptions(
-    num_measure_trials=5,
-    runner=measure_ctx.runner,
-    measure_callbacks=[auto_scheduler.RecordToFile(log_file)],
-)
-sch, args = auto_scheduler.auto_schedule(task, search_policy, tuning_options=tune_option)
+def resume_search(task, log_file):
+    print("Resume search:")
+    cost_model = auto_scheduler.XGBModel()
+    cost_model.update_from_file(log_file)
+    search_policy = auto_scheduler.SketchPolicy(
+        task, cost_model, init_search_callbacks=[auto_scheduler.PreloadMeasuredStates(log_file)]
+    )
+    measure_ctx = auto_scheduler.LocalRPCMeasureContext(min_repeat_ms=300)
+    tune_option = auto_scheduler.TuningOptions(
+        num_measure_trials=5,
+        runner=measure_ctx.runner,
+        measure_callbacks=[auto_scheduler.RecordToFile(log_file)],
+    )
+    task.tune(tune_option, search_policy=search_policy)
 
-# kill the measurement process
-del measure_ctx
+    # Kill the measurement process
+    del measure_ctx
+
+
+resume_search(task, log_file)

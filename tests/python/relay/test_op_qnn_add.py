@@ -38,6 +38,7 @@ def test_tflite_same_io_qnn_params():
 
     func = relay.Function([x, y], z)
     mod = tvm.IRModule.from_expr(func)
+    mod = relay.transform.InferType()(mod)
     mod = relay.qnn.transform.CanonicalizeOps()(mod)
     func = mod["main"]
 
@@ -62,7 +63,7 @@ def test_tflite_same_io_qnn_params():
         y_data = y_datas[i]
         golden_output = golden_outputs[i]
 
-        intrp = relay.create_executor("graph", ctx=tvm.cpu(0), target="llvm")
+        intrp = relay.create_executor("graph", device=tvm.cpu(0), target="llvm")
         op_res = intrp.evaluate(func)(x_data, y_data)
         np.testing.assert_equal(op_res.asnumpy(), golden_output)
 
@@ -85,6 +86,7 @@ def test_tflite_different_io_qnn_params():
 
     func = relay.Function([x, y], z)
     mod = tvm.IRModule.from_expr(func)
+    mod = relay.transform.InferType()(mod)
     mod = relay.qnn.transform.CanonicalizeOps()(mod)
     func = mod["main"]
 
@@ -109,7 +111,7 @@ def test_tflite_different_io_qnn_params():
         y_data = y_datas[i]
         golden_output = golden_outputs[i]
 
-        intrp = relay.create_executor("graph", ctx=tvm.cpu(0), target="llvm")
+        intrp = relay.create_executor("graph", device=tvm.cpu(0), target="llvm")
         op_res = intrp.evaluate(func)(x_data, y_data)
         np.testing.assert_equal(op_res.asnumpy(), golden_output)
 
@@ -132,14 +134,16 @@ def test_saturation():
 
     func = relay.Function([x, y], z)
     mod = tvm.IRModule.from_expr(func)
+    mod = relay.transform.InferType()(mod)
     mod = relay.qnn.transform.CanonicalizeOps()(mod)
     func = mod["main"]
+    mod = relay.transform.InferType()(mod)
 
     x_data = np.array((255, 1, 1, 0)).reshape((1, 4))
     y_data = np.array((255, 255, 128, 0)).reshape((1, 4))
     golden_output = np.array((255, 255, 129, 0)).reshape((1, 4))
 
-    intrp = relay.create_executor("graph", ctx=tvm.cpu(0), target="llvm")
+    intrp = relay.create_executor("graph", device=tvm.cpu(0), target="llvm")
     op_res = intrp.evaluate(func)(x_data, y_data)
     np.testing.assert_equal(op_res.asnumpy(), golden_output)
 
@@ -157,6 +161,7 @@ def test_saturation():
 
     func = relay.Function([x, y], z)
     mod = tvm.IRModule.from_expr(func)
+    mod = relay.transform.InferType()(mod)
     mod = relay.qnn.transform.CanonicalizeOps()(mod)
     func = mod["main"]
 
@@ -164,7 +169,7 @@ def test_saturation():
     y_data = np.array((255, 255, 127, 0)).reshape((1, 4))
     golden_output = np.array((255, 129, 65, 0)).reshape((1, 4))
 
-    intrp = relay.create_executor("graph", ctx=tvm.cpu(0), target="llvm")
+    intrp = relay.create_executor("graph", device=tvm.cpu(0), target="llvm")
     op_res = intrp.evaluate(func)(x_data, y_data)
     np.testing.assert_equal(op_res.asnumpy(), golden_output)
 
@@ -182,6 +187,7 @@ def test_saturation():
 
     func = relay.Function([x, y], z)
     mod = tvm.IRModule.from_expr(func)
+    mod = relay.transform.InferType()(mod)
     mod = relay.qnn.transform.CanonicalizeOps()(mod)
     func = mod["main"]
 
@@ -189,7 +195,7 @@ def test_saturation():
     y_data = np.array((255, 255, 127, 0)).reshape((1, 4))
     golden_output = np.array((255, 129, 65, 0)).reshape((1, 4))
 
-    intrp = relay.create_executor("graph", ctx=tvm.cpu(0), target="llvm")
+    intrp = relay.create_executor("graph", device=tvm.cpu(0), target="llvm")
     op_res = intrp.evaluate(func)(x_data, y_data)
     np.testing.assert_equal(op_res.asnumpy(), golden_output)
 
@@ -207,6 +213,7 @@ def test_saturation():
 
     func = relay.Function([x, y], z)
     mod = tvm.IRModule.from_expr(func)
+    mod = relay.transform.InferType()(mod)
     mod = relay.qnn.transform.CanonicalizeOps()(mod)
     func = mod["main"]
 
@@ -214,7 +221,7 @@ def test_saturation():
     y_data = np.array((0, 128, 64, 0)).reshape((1, 4))
     golden_output = np.array((255, 255, 132, 0)).reshape((1, 4))
 
-    intrp = relay.create_executor("graph", ctx=tvm.cpu(0), target="llvm")
+    intrp = relay.create_executor("graph", device=tvm.cpu(0), target="llvm")
     op_res = intrp.evaluate(func)(x_data, y_data)
     np.testing.assert_equal(op_res.asnumpy(), golden_output)
 

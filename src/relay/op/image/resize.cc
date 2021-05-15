@@ -35,17 +35,17 @@ TVM_REGISTER_NODE_TYPE(ResizeAttrs);
 
 bool ResizeRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 2);
+  ICHECK_EQ(types.size(), 2);
   const auto* data = types[0].as<TensorTypeNode>();
   if (data == nullptr) return false;
 
   static const Layout kNCHW("NCHW");
 
   const ResizeAttrs* param = attrs.as<ResizeAttrs>();
-  CHECK(param != nullptr);
+  ICHECK(param != nullptr);
   const Layout in_layout(param->layout);
   auto layout_converter = tir::BijectiveLayout(in_layout, kNCHW);
-  CHECK(layout_converter.defined())
+  ICHECK(layout_converter.defined())
       << "Resize only support input layouts that are convertible from NCHW."
       << " But got " << in_layout;
 
@@ -66,12 +66,16 @@ bool ResizeRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
 // Positional relay function to create image operator
 // used by frontend FFI.
 Expr MakeResize(Expr data, Array<IndexExpr> size, String layout, String method,
-                String coordinate_transformation_mode, DataType out_dtype) {
+                String coordinate_transformation_mode, String rounding_method, double bicubic_alpha,
+                int bicubic_exclude, DataType out_dtype) {
   auto attrs = make_object<ResizeAttrs>();
   attrs->size = std::move(size);
   attrs->layout = std::move(layout);
   attrs->method = std::move(method);
   attrs->coordinate_transformation_mode = coordinate_transformation_mode;
+  attrs->rounding_method = rounding_method;
+  attrs->bicubic_alpha = bicubic_alpha;
+  attrs->bicubic_exclude = bicubic_exclude;
   attrs->out_dtype = out_dtype;
   static const Op& op = Op::Get("image.resize");
   return Call(op, {data}, Attrs(attrs), {});
@@ -104,17 +108,17 @@ TVM_REGISTER_NODE_TYPE(Resize3dAttrs);
 
 bool Resize3dRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                  const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 2);
+  ICHECK_EQ(types.size(), 2);
   const auto* data = types[0].as<TensorTypeNode>();
   if (data == nullptr) return false;
 
   static const Layout kNCDHW("NCDHW");
 
   const Resize3dAttrs* param = attrs.as<Resize3dAttrs>();
-  CHECK(param != nullptr);
+  ICHECK(param != nullptr);
   const Layout in_layout(param->layout);
   auto layout_converter = tir::BijectiveLayout(in_layout, kNCDHW);
-  CHECK(layout_converter.defined())
+  ICHECK(layout_converter.defined())
       << "Resize3d only support input layouts that are convertible from NCDHW."
       << " But got " << in_layout;
 
@@ -175,14 +179,14 @@ TVM_REGISTER_NODE_TYPE(CropAndResizeAttrs);
 
 bool CropAndResizeRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                       const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 4);
+  ICHECK_EQ(types.size(), 4);
   const auto* data = types[0].as<TensorTypeNode>();
   const auto* boxes = types[1].as<TensorTypeNode>();
   const auto* box_indices = types[2].as<TensorTypeNode>();
   if (data == nullptr || boxes == nullptr || box_indices == nullptr) return false;
 
   const CropAndResizeAttrs* param = attrs.as<CropAndResizeAttrs>();
-  CHECK(param != nullptr);
+  ICHECK(param != nullptr);
   auto crop_size = param->crop_size;
 
   DataType out_dtype = param->out_dtype;

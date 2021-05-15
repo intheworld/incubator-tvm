@@ -49,12 +49,18 @@ else:
 def _load_lib():
     """Load libary by searching possible path."""
     lib_path = libinfo.find_lib_path()
+    # The dll search path need to be added explicitly in
+    # windows after python 3.8
+    if sys.platform.startswith("win32") and sys.version_info >= (3, 8):
+        for path in libinfo.get_dll_directories():
+            os.add_dll_directory(path)
     lib = ctypes.CDLL(lib_path[0], ctypes.RTLD_GLOBAL)
     lib.TVMGetLastError.restype = ctypes.c_char_p
     return lib, os.path.basename(lib_path[0])
 
 
 try:
+    # The following import is needed for TVM to work with pdb
     import readline  # pylint: disable=unused-import
 except ImportError:
     pass
@@ -69,6 +75,7 @@ _RUNTIME_ONLY = "runtime" in _LIB_NAME
 
 # The FFI mode of TVM
 _FFI_MODE = os.environ.get("TVM_FFI", "auto")
+
 
 # ----------------------------
 # helper function in ctypes.
@@ -248,7 +255,9 @@ def c2pyerror(err_msg):
     message = []
     for line in arr:
         if trace_mode:
-            if line.startswith("  "):
+            if line.startswith("        "):
+                stack_trace[-1] += "\n" + line
+            elif line.startswith("  "):
                 stack_trace.append(line)
             else:
                 trace_mode = False

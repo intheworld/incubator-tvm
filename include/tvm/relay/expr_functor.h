@@ -32,10 +32,11 @@
 #include <tvm/relay/function.h>
 #include <tvm/relay/op.h>
 
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <utility>
-
+#include <vector>
 namespace tvm {
 namespace relay {
 
@@ -87,7 +88,8 @@ class ExprFunctor<R(const Expr& n, Args...)> {
    * \return The result of the call
    */
   virtual R VisitExpr(const Expr& n, Args... args) {
-    CHECK(n.defined());
+    ICHECK(n.defined()) << "Found null pointer node while traversing AST. The previous pass may "
+                           "have generated invalid data.";
     static FType vtable = InitVTable();
     return vtable(n, this, std::forward<Args>(args)...);
   }
@@ -274,7 +276,9 @@ class MixedModeVisitor : public ::tvm::relay::ExprVisitor {
  */
 class MixedModeMutator : public ::tvm::relay::ExprMutator {
  public:
+  MixedModeMutator(bool pre = false) : pre_{pre} {};
   Expr VisitExpr(const Expr& expr) final;
+
   virtual Expr DispatchVisitExpr(const Expr& expr);
   Expr VisitExpr_(const TupleNode* op) final { return Rewrite(op); };
   Expr VisitExpr_(const CallNode* call_node) final { return Rewrite(call_node); };
@@ -292,6 +296,7 @@ class MixedModeMutator : public ::tvm::relay::ExprMutator {
   virtual Expr Rewrite_(const TupleGetItemNode* pre, const Expr& post) { return post; }
 
  protected:
+  bool pre_;
   /*! \brief Implement Rewrite API by calling ExprMutator's VisitExpr_(op) to get a `post` node with
    * changed inputs.
    */
@@ -345,7 +350,7 @@ class ExprRewriter {
    * \return The result of the call
    */
   virtual Expr Rewrite(const Expr& pre, const Expr& post) {
-    CHECK(pre.defined());
+    ICHECK(pre.defined());
     static FType vtable = InitVTable();
     return vtable(pre, this, post);
   }
@@ -407,6 +412,87 @@ Expr PostOrderRewrite(const Expr& expr, ExprRewriter* rewriter);
  * \param fvisit The visitor function to be applied.
  */
 void PostOrderVisit(const Expr& node, std::function<void(const Expr&)> fvisit);
+
+/*!
+ * \brief A struct to keep info of traversed expr in ExpandDataflow function
+ */
+struct v_info {
+  explicit v_info(Expr node_) : node{node_} {}
+  v_info(Expr node_, bool children_expanded_)
+      : node{node_}, children_expanded{children_expanded_} {};
+  Expr node{};
+  bool children_expanded{false};
+};
+
+/*!
+ * \brief A function to iteratively traverse dataflow regions of a graph
+ *
+ * ExpandDataflow manually manages a stack and performs DFS to determine the processing
+ * order of nodes in an input graph.
+ *
+ * By default fexpand_expr implemented in a way that if it finds a dataflow node (Call, Tuple,
+ * TupleGetItem), it checks if the arguments to that node need to be processed via fcheck_visited.
+ * If so, the function pushes those arguments to the stack and continues iteratively to process
+ * the top of the stack. When it finds a node that doesn't match the dataflow types, or a node who's
+ * inputs have all been processed, it visits the current leaf via fvisit_leaf.
+ *
+ * This function should be used internally to other classes to implement mixed-mode traversals. The
+ * expectation is that fvisit_leaf will perform recursive analysis within mixed-mode traversal if it
+ * hits a non-dataflow node.
+ *
+ * fcheck_visited, fvisit_leaf and fexpand_expr are templated to encourage reusing.
+ */
+template <typename FCheckVisited, typename FVisitLeaf, typename FExpandExpr>
+void ExpandDataflow(Expr expr, FCheckVisited fcheck_visited, FVisitLeaf fvisit_leaf,
+                    FExpandExpr fexpand_expr) {
+  std::deque<v_info> stack;
+  auto fpush_to_stack = [&fcheck_visited, &stack](const Expr& expr) {
+    if (!fcheck_visited(expr)) {
+      stack.emplace_front(v_info(expr));
+    }
+  };
+
+  fpush_to_stack(expr);
+  while (stack.size() > 0) {
+    v_info* front = &stack.front();
+    if (fcheck_visited(front->node)) {
+      stack.pop_front();
+    } else if (front->children_expanded) {
+      fvisit_leaf(front->node);
+      // TODO(d-smirnov): this is for compatibility with current implementation of MixedModeVisitor
+      stack.pop_front();
+    } else {
+      front->children_expanded = true;
+      for (auto e : fexpand_expr(front->node)) {
+        fpush_to_stack(e);
+      }
+    }
+  }
+}
+
+template <typename FCheckVisited, typename FVisitLeaf>
+void ExpandDataflow(Expr expr, FCheckVisited fcheck_visited, FVisitLeaf fvisit_leaf) {
+  auto fexpand_expr = [](const Expr& expr) {
+    std::vector<Expr> result;
+    if (const CallNode* op = expr.as<CallNode>()) {
+      for (auto it = op->args.rbegin(); it != op->args.rend(); ++it) {
+        result.push_back(*it);
+      }
+      result.push_back(op->op);
+    } else if (const TupleNode* op = expr.as<TupleNode>()) {
+      for (auto it = op->fields.rbegin(); it != op->fields.rend(); ++it) {
+        result.push_back(*it);
+      }
+    } else if (const TupleGetItemNode* op = expr.as<TupleGetItemNode>()) {
+      result.push_back(op->tuple);
+    }
+    return result;
+  };
+  ExpandDataflow(expr, fcheck_visited, fvisit_leaf, fexpand_expr);
+}
+
+void ExpandANormalForm(const LetNode* op, std::function<void(const LetNode*)> pre_visit,
+                       std::function<void(const LetNode*)> post_visit);
 
 }  // namespace relay
 }  // namespace tvm

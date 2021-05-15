@@ -42,8 +42,8 @@ void SmithNormalFormDiag(std::vector<std::vector<int64_t>>* S, std::vector<std::
   if (S->empty() || V->empty()) return;
   size_t m = S->size();
   size_t n = (*S)[0].size();  // n is # of variables
-  CHECK_EQ(V->size(), n);
-  CHECK_EQ((*V)[0].size(), n);
+  ICHECK_EQ(V->size(), n);
+  ICHECK_EQ((*V)[0].size(), n);
 
   for (size_t index = 0; index < std::min(m, n); ++index) {
     // Here A is partially diagonalized, that is A[i, j] is zero for all i, j
@@ -427,11 +427,10 @@ IntConstraintsTransform SolveLinearEquations(const IntConstraints& system_to_sol
 
   // We have to transform ranges of the old variables into relations over new variables because
   // new ranges are not enough usually.
-  for (const auto& p : system_to_solve->ranges) {
-    const Var& old_var = p.first;
-    const Range& old_range = p.second;
-    if (old_to_new_map.count(old_var)) {
-      PrimExpr express_by_new_vars = old_to_new_map[old_var];
+  for (const auto& old_var : system_to_solve->variables) {
+    if (system_to_solve->ranges.find(old_var) != system_to_solve->ranges.end()) {
+      const Range& old_range = system_to_solve->ranges.at(old_var);
+      PrimExpr express_by_new_vars = old_to_new_map.at(old_var);
       PrimExpr lower_cond = analyzer_solution.Simplify(old_range->min <= express_by_new_vars);
       PrimExpr upper_cond =
           analyzer_solution.Simplify(express_by_new_vars < old_range->min + old_range->extent);

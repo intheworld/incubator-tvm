@@ -42,6 +42,10 @@ TIR_DEFINE_BUILTIN_FUNC(reinterpret)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kPure))
     .set_num_inputs(1);
 
+TIR_DEFINE_BUILTIN_FUNC(ret)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kControlJump))
+    .set_num_inputs(1);
+
 TIR_DEFINE_BUILTIN_FUNC(likely)
     .set_num_inputs(1)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kExprAnnotation))
@@ -170,6 +174,9 @@ TIR_DEFINE_BUILTIN_FUNC(tvm_stack_make_array)
 TIR_DEFINE_BUILTIN_FUNC(tvm_call_packed)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
+TIR_DEFINE_BUILTIN_FUNC(tvm_call_cpacked)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
 TIR_DEFINE_BUILTIN_FUNC(tvm_call_trace_packed)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
@@ -178,6 +185,9 @@ TIR_DEFINE_BUILTIN_FUNC(tvm_thread_context)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_BUILTIN_FUNC(tvm_call_packed_lowered)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
+
+TIR_DEFINE_BUILTIN_FUNC(tvm_call_cpacked_lowered)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 TIR_DEFINE_BUILTIN_FUNC(tvm_call_trace_packed_lowered)
@@ -228,6 +238,9 @@ TIR_DEFINE_BUILTIN_FUNC(vectorlow).set_attr<TCallEffectKind>("TCallEffectKind",
 
 TIR_DEFINE_BUILTIN_FUNC(vectorcombine)
     .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kPure));
+
+TIR_DEFINE_BUILTIN_FUNC(atomic_add)
+    .set_attr<TCallEffectKind>("TCallEffectKind", Integer(CallEffectKind::kOpaque));
 
 }  // namespace builtin
 }  // namespace tir

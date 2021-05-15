@@ -191,16 +191,16 @@ class Interpreter(Executor):
     mod : tvm.IRModule
         The module to support the execution.
 
-    ctx : tvmContext
-        The runtime context to run the code on.
+    device : Device
+        The runtime device to run the code on.
 
     target : tvm.Target
         The target option to build the function.
     """
 
-    def __init__(self, mod, ctx, target):
+    def __init__(self, mod, device, target):
         self.mod = mod
-        self.ctx = ctx
+        self.device = device
         self.target = target
 
     def optimize(self):
@@ -213,13 +213,15 @@ class Interpreter(Executor):
         """
         seq = tvm.transform.Sequential(
             [
+                # tvm.parser.AnnotateSpans(),
                 transform.SimplifyInference(),
                 transform.FuseOps(0),
                 transform.ToANormalForm(),
                 transform.InferType(),
             ]
         )
-        return seq(self.mod)
+        mod = seq(self.mod)
+        return mod
 
     def _make_executor(self, expr=None):
         if expr is None or isinstance(expr, GlobalVar):
@@ -251,7 +253,7 @@ class Interpreter(Executor):
 
             mod = self.optimize()
             opt_expr = Call(mod["main"], relay_args)
-            _intrp = _backend.CreateInterpreter(mod, self.ctx, self.target)
+            _intrp = _backend.CreateInterpreter(mod, self.device, self.target)
             return _intrp(opt_expr)
 
         return _interp_wrapper

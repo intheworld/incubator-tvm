@@ -19,14 +19,14 @@
 
 import logging
 import tvm
-from tvm import te
-from tvm import relay
-from tvm import autotvm
+from tvm import te, relay, autotvm
 
 from .. import nn
-from ..util import get_const_tuple
+from ..utils import get_const_tuple
 from .conv2d_winograd import _infer_tile_size
+from .tensorcore_alter_op import pad_to_tensorcore
 from ..nn import conv2d_legalize
+
 
 logger = logging.getLogger("topi")
 
@@ -36,22 +36,7 @@ def _alter_conv2d_layout(attrs, inputs, tinfos, out_type):
     target = tvm.target.Target.current(allow_none=False)
     dispatch_ctx = autotvm.task.DispatchContext.current
 
-    _, outs = relay.backend.compile_engine.select_implementation(
-        relay.op.get("nn.conv2d"), attrs, tinfos, out_type, target
-    )
-    workload = autotvm.task.get_workload(outs)
-    if workload is None:
-        # The best implementation is not an AutoTVM template,
-        # we then assume it's not necessary to alter this op.
-        return None
-    cfg = dispatch_ctx.query(target, workload)
-    if cfg.is_fallback:  # if is fallback, clear query cache and return None
-        autotvm.task.clear_fallback_cache(target, workload)
-        return None
-
-    topi_tmpl = workload[0]
     new_attrs = {k: attrs[k] for k in attrs.keys()}
-
     strides = attrs.get_int_tuple("strides")
     padding = attrs.get_int_tuple("padding")
     dilation = attrs.get_int_tuple("dilation")
@@ -61,6 +46,46 @@ def _alter_conv2d_layout(attrs, inputs, tinfos, out_type):
     data, kernel = tinfos
     out_dtype = out_type.dtype
 
+    impl, outs = relay.backend.compile_engine.select_implementation(
+        relay.op.get("nn.conv2d"), attrs, tinfos, out_type, target
+    )
+    workload = autotvm.task.get_workload(outs)
+    if workload is None:
+        # The best implementation is not an AutoTVM template.
+        # It may be from the auto-scheduler
+
+        if impl.name.find("winograd") != -1:
+            if dilation != (1, 1):
+                logger.warning("Does not support weight pre-transform for dilated convolution.")
+                return None
+
+            assert data_layout == "NHWC" and kernel_layout == "HWIO"
+            N, H, W, CI = get_const_tuple(data.shape)
+            KH, KW, _, CO = get_const_tuple(kernel.shape)
+
+            # Pre-compute weight transformation in winograd
+            tile_size = _infer_tile_size(tinfos[0], tinfos[1], layout="NHWC")
+
+            # HWIO -> OIHW
+            kernel_transform = relay.transpose(inputs[1], axes=[3, 2, 0, 1])
+            # alpha, alpha, CO, CI
+            weight = relay.nn.contrib_conv2d_winograd_weight_transform(
+                kernel_transform, tile_size=tile_size
+            )
+            new_attrs["tile_size"] = tile_size
+            new_attrs["channels"] = CO
+            return relay.nn.contrib_conv2d_winograd_without_weight_transform(
+                inputs[0], weight, **new_attrs
+            )
+
+        return None
+
+    cfg = dispatch_ctx.query(target, workload)
+    if cfg.is_fallback:  # if is fallback, clear query cache and return None
+        autotvm.task.clear_fallback_cache(target, workload)
+        return None
+
+    topi_tmpl = workload[0]
     if topi_tmpl == "conv2d_NCHWc_int8.cuda":
         assert data_layout == "NCHW" and kernel_layout == "OIHW"
         N, CI, H, W = get_const_tuple(data.shape)
@@ -136,10 +161,7 @@ def _alter_conv2d_layout(attrs, inputs, tinfos, out_type):
         KH, KW, _, CO = get_const_tuple(kernel.shape)
 
         # Pre-compute weight transformation in winograd
-        if H % 8 == 0:
-            tile_size = 4
-        else:
-            tile_size = 2
+        tile_size = _infer_tile_size(data, kernel, layout="NHWC")
         kernel_transform = relay.transpose(inputs[1], axes=[3, 2, 0, 1])
         weight = relay.nn.contrib_conv2d_winograd_weight_transform(
             kernel_transform, tile_size=tile_size
@@ -203,7 +225,7 @@ def _alter_conv2d_layout(attrs, inputs, tinfos, out_type):
 
     if topi_tmpl == "conv2d_HWNCnc_tensorcore.cuda":
         assert data_layout == "HWNC" and kernel_layout == "HWOI"
-        assert float(tvm.gpu(0).compute_version) >= 7.5
+        assert float(tvm.cuda(0).compute_version) >= 7.5
         H, W, N, CI = get_const_tuple(data.shape)
         KH, KW, CO, _ = get_const_tuple(kernel.shape)
 
@@ -324,5 +346,51 @@ def _conv2d_legalize(attrs, inputs, arg_types):
                 out = relay.strided_slice(out, begin=[0, 0, 0, 0], end=original_out_shape)
             else:
                 out = relay.nn.conv2d(data, kernel, **new_attrs)
+            return out
+    elif data_dtype in ["float16"]:  # todo: support int8/int4
+        if data_layout == "NHWC" and kernel_layout == "HWIO":
+            batch = data_tensor.shape[0].value
+            in_channel = data_tensor.shape[3].value
+            out_channel = kernel_tensor.shape[3].value
+
+            if (
+                (batch % 8 == 0 and in_channel % 16 == 0 and out_channel % 32 == 0)
+                or (batch % 16 == 0 and in_channel % 16 == 0 and out_channel % 16 == 0)
+                or (batch % 32 == 0 and in_channel % 16 == 0 and out_channel % 8 == 0)
+            ):
+                # no need to pad
+                return None
+
+            (db, di, do), extra_flops = pad_to_tensorcore(batch, in_channel, out_channel)
+
+            if extra_flops > 2:
+                logger.info("conv2d pad_to_tensorcore skipped, extra_flops %s", extra_flops)
+                return None
+
+            logger.info("conv2d pad_to_tensorcore, extra_flops %s", extra_flops)
+
+            # Pad batch size
+            if db != 0:
+                data = relay.nn.pad(data, pad_width=((0, db), (0, 0), (0, 0), (0, 0)))
+
+            # Pad input channel
+            if di != 0:
+                data = relay.nn.pad(data, pad_width=((0, 0), (0, 0), (0, 0), (0, di)))
+                kernel = relay.nn.pad(kernel, pad_width=((0, 0), (0, 0), (0, di), (0, 0)))
+
+            # Pad output channel
+            if do != 0:
+                kernel = relay.nn.pad(kernel, pad_width=((0, 0), (0, 0), (0, 0), (0, do)))
+
+            if do != 0:
+                new_out_channel = out_channel + do
+                new_attrs["channels"] = new_out_channel
+
+            out = relay.nn.conv2d(data, kernel, **new_attrs)
+
+            if db != 0 or do != 0:
+                original_out_shape = [x.value for x in output_tensor.shape]
+                out = relay.strided_slice(out, begin=[0, 0, 0, 0], end=original_out_shape)
+
             return out
     return None

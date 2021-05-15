@@ -22,6 +22,8 @@
  * \brief Dialect operators for Relay VM.
  */
 
+#include "vm.h"
+
 #include <tvm/relay/attrs/memory.h>
 #include <tvm/relay/attrs/vm.h>
 #include <tvm/relay/expr.h>
@@ -30,7 +32,9 @@
 #include <tvm/runtime/data_type.h>
 #include <tvm/topi/elemwise.h>
 
-#include "../../transforms/infer_layout_util.h"
+#include <utility>
+
+#include "../../transforms/infer_layout_utils.h"
 #include "../op_common.h"
 #include "../type_relations.h"
 
@@ -52,29 +56,32 @@ RELAY_REGISTER_OP("vm.shape_of")
     .set_attr<TNonComputational>("TNonComputational", true)
     .set_attr<FInferCorrectLayout>("FInferCorrectLayout", ElemwiseArbitraryLayout);
 
-TVM_REGISTER_GLOBAL("relay.op.vm.shape_of").set_body_typed([](Expr expr) {
+Expr ShapeOf(Expr expr) {
   auto attrs = make_object<ShapeOfAttrs>();
   attrs->dtype = DataType::Int(64);
   static const Op& op = Op::Get("vm.shape_of");
   return Call(op, {expr}, Attrs(attrs), {});
-});
+}
 
-TVM_REGISTER_GLOBAL("relay.op.vm.shape_func")
-    .set_body_typed([](Expr func, Expr inputs, Expr outputs, Array<tvm::Integer> is_input) {
-      static const Op& op = Op::Get("vm.shape_func");
-      auto attrs = make_object<ShapeFuncAttrs>();
-      attrs->is_input = is_input;
-      return Call(op, {func, inputs, outputs}, Attrs(attrs), {});
-    });
+TVM_REGISTER_GLOBAL("relay.op.vm.shape_of").set_body_typed(ShapeOf);
+
+Expr ShapeFunc(Expr func, Expr inputs, Expr outputs, Array<tvm::Integer> is_input) {
+  static const Op& op = Op::Get("vm.shape_func");
+  auto attrs = make_object<ShapeFuncAttrs>();
+  attrs->is_input = is_input;
+  return Call(op, {func, inputs, outputs}, Attrs(attrs), {});
+}
+
+TVM_REGISTER_GLOBAL("relay.op.vm.shape_func").set_body_typed(ShapeFunc);
 
 bool ShapeFuncRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                   const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 4u);
+  ICHECK_EQ(types.size(), 4u);
   auto shape_func_attrs = attrs.as<ShapeFuncAttrs>();
-  CHECK(shape_func_attrs != nullptr) << "Internal compiler error";
+  ICHECK(shape_func_attrs != nullptr) << "Internal compiler error";
 
   auto func_type = types[0].as<FuncTypeNode>();
-  CHECK(func_type != nullptr);
+  ICHECK(func_type != nullptr);
 
   auto tuple = TupleType(func_type->arg_types);
   auto in_types = FlattenTupleType(tuple);
@@ -121,7 +128,9 @@ bool ShapeFuncRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
 RELAY_REGISTER_OP("vm.shape_func")
     .describe(R"code(Get the shape of a tensor.)code" TVM_ADD_FILELINE)
     .set_num_inputs(3)
-    .add_argument("tensor", "Tensor", "The tensor to retrieve the shape for.")
+    .add_argument("func", "Function", "The operation to call")
+    .add_argument("ins", "Tuple", "The input tensors.")
+    .add_argument("outs", "Tuple", "The output tensors.")
     .add_type_rel("ShapeFuncRel", ShapeFuncRel)
     .set_support_level(10)
     .set_attr<TOpPattern>("TOpPattern", kOpaque)
@@ -137,20 +146,20 @@ RELAY_REGISTER_OP("vm.shape_func")
 // vm.invoke_tvm_op
 bool InvokeTVMOpRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                     const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 4u);
+  ICHECK_EQ(types.size(), 4u);
   auto func_type = types[0].as<FuncTypeNode>();
-  CHECK(func_type != nullptr) << "input must be operator with known type";
+  ICHECK(func_type != nullptr) << "input must be operator with known type";
   auto input_type = types[1].as<TupleTypeNode>();
   auto output_type = types[2].as<TupleTypeNode>();
-  CHECK(input_type != nullptr)
+  ICHECK(input_type != nullptr)
       << "internal invariant violated: invoke_tvm_op inputs must be a tuple";
-  CHECK(output_type != nullptr)
+  ICHECK(output_type != nullptr)
       << "internal invariant violated: invoke_tvm_op outputs must be a tuple";
   Type ex_output;
   if (func_type->ret_type.as<TensorTypeNode>()) {
     ex_output = TupleType({func_type->ret_type});
   } else {
-    CHECK(func_type->ret_type.as<TupleTypeNode>()) << "should be tuple type";
+    ICHECK(func_type->ret_type.as<TupleTypeNode>()) << "should be tuple type";
     ex_output = func_type->ret_type;
   }
   auto ex_input = TupleType(func_type->arg_types);
@@ -160,10 +169,11 @@ bool InvokeTVMOpRel(const Array<Type>& types, int num_inputs, const Attrs& attrs
   return true;
 }
 
-TVM_REGISTER_GLOBAL("relay.op.vm.invoke_tvm_op")
-    .set_body_typed([](Expr func, Expr inputs, Expr outputs) {
-      return Call(Op::Get("vm.invoke_tvm_op"), {func, inputs, outputs}, Attrs());
-    });
+Expr InvokeTVMOp(Expr func, Expr inputs, Expr outputs) {
+  return Call(Op::Get("vm.invoke_tvm_op"), {func, inputs, outputs}, Attrs());
+}
+
+TVM_REGISTER_GLOBAL("relay.op.vm.invoke_tvm_op").set_body_typed(InvokeTVMOp);
 
 RELAY_REGISTER_OP("vm.invoke_tvm_op")
     .describe(R"code(Invoke an operation compiled by TVM.)code" TVM_ADD_FILELINE)
@@ -188,11 +198,11 @@ TVM_REGISTER_NODE_TYPE(ReshapeTensorAttrs);
 
 bool ReshapeTensorRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                       const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 3u);
+  ICHECK_EQ(types.size(), 3u);
   auto reshape_attrs = attrs.as<ReshapeTensorAttrs>();
-  CHECK(reshape_attrs);
+  ICHECK(reshape_attrs);
   auto tt = types[0].as<TensorTypeNode>();
-  CHECK(tt) << "input must be tensor type";
+  ICHECK(tt) << "input must be tensor type";
   reporter->Assign(types[2], TensorType(reshape_attrs->newshape, tt->dtype));
   return true;
 }
@@ -210,13 +220,14 @@ RELAY_REGISTER_OP("vm.reshape_tensor")
     .set_attr<TNonComputational>("TNonComputational", true)
     .set_attr<FInferCorrectLayout>("FInferCorrectLayout", ElemwiseArbitraryLayout);
 
-TVM_REGISTER_GLOBAL("relay.op.vm.reshape_tensor")
-    .set_body_typed([](Expr data, Expr shape, Array<PrimExpr> newshape) {
-      static const Op& op = Op::Get("vm.reshape_tensor");
-      auto attrs = make_object<ReshapeTensorAttrs>();
-      attrs->newshape = std::move(newshape);
-      return Call(op, {data, shape}, Attrs(attrs), {});
-    });
+Expr ReshapeTensor(Expr data, Expr shape, Array<PrimExpr> newshape) {
+  static const Op& op = Op::Get("vm.reshape_tensor");
+  auto attrs = make_object<ReshapeTensorAttrs>();
+  attrs->newshape = std::move(newshape);
+  return Call(op, {data, shape}, Attrs(attrs), {});
+}
+
+TVM_REGISTER_GLOBAL("relay.op.vm.reshape_tensor").set_body_typed(ReshapeTensor);
 
 }  // namespace relay
 }  // namespace tvm

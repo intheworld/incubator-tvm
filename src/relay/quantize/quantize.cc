@@ -39,13 +39,17 @@ TVM_REGISTER_NODE_TYPE(SimulatedQuantizeAttrs);
 
 bool SimulatedQuantizeRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                           const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 5);
+  ICHECK_EQ(types.size(), 5);
   const auto param = attrs.as<SimulatedQuantizeAttrs>();
-  CHECK(param != nullptr);
+  ICHECK(param != nullptr);
 
   const auto* data = types[0].as<TensorTypeNode>();
-  CHECK(data != nullptr);
-  CHECK_NE(data->shape.size(), 0) << "Input shape cannot be empty";
+
+  if (data == nullptr) {
+    return false;
+  }
+
+  ICHECK_NE(data->shape.size(), 0) << "Input shape cannot be empty";
 
   reporter->Assign(types[1], TensorType({}, DataType::Float(32)));  // dom_scale
   reporter->Assign(types[2], TensorType({}, DataType::Float(32)));  // clip_min
@@ -122,6 +126,7 @@ TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
       p->stream << "global_scale=" << op->global_scale << ", ";
       p->stream << "weight_scale=" << op->weight_scale << ", ";
       p->stream << "skip_conv_layers==" << op->skip_conv_layers << ", ";
+      p->stream << "skip_dense_layer==" << op->skip_dense_layer << ", ";
       p->stream << "do_simulation==" << op->do_simulation << ", ";
       p->stream << "round_for_shift==" << op->round_for_shift << ", ";
       p->stream << "debug_enabled_ops==" << op->debug_enabled_ops << ", ";

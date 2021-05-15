@@ -34,7 +34,7 @@ import tvm
 from tvm import te
 import tvm.relay as relay
 from tvm import rpc
-from tvm.contrib import util, ndk, graph_runtime as runtime
+from tvm.contrib import utils, ndk, graph_executor as runtime
 from tvm.contrib.download import download_testdata
 
 
@@ -47,7 +47,7 @@ from tvm.contrib.download import download_testdata
 #
 # .. code-block:: bash
 #
-#   git clone --recursive https://github.com/apache/incubator-tvm tvm
+#   git clone --recursive https://github.com/apache/tvm tvm
 #   cd tvm
 #   docker build -t tvm.demo_android -f docker/Dockerfile.demo_android ./docker
 #   docker run --pid=host -h tvm -v $PWD:/workspace \
@@ -71,7 +71,7 @@ from tvm.contrib.download import download_testdata
 #         -DUSE_RPC=ON \
 #         -DUSE_SORT=ON \
 #         -DUSE_VULKAN=ON \
-#         -DUSE_GRAPH_RUNTIME=ON \
+#         -DUSE_GRAPH_EXECUTOR=ON \
 #         ..
 #   make -j10
 #
@@ -106,7 +106,7 @@ from tvm.contrib.download import download_testdata
 # --------------------------------------
 # Now we can register our Android device to the tracker.
 #
-# Follow this `readme page <https://github.com/apache/incubator-tvm/tree/master/apps/android_rpc>`_ to
+# Follow this `readme page <https://github.com/apache/tvm/tree/main/apps/android_rpc>`_ to
 # install TVM RPC APK on the android device.
 #
 # Here is an example of config.mk. I enabled OpenCL and Vulkan.
@@ -139,7 +139,7 @@ from tvm.contrib.download import download_testdata
 #
 # .. note::
 #
-#   At this time, don't forget to `create a standalone toolchain <https://github.com/apache/incubator-tvm/tree/master/apps/android_rpc#architecture-and-android-standalone-toolchain>`_ .
+#   At this time, don't forget to `create a standalone toolchain <https://github.com/apache/tvm/tree/main/apps/android_rpc#architecture-and-android-standalone-toolchain>`_ .
 #
 #   for example
 #
@@ -206,7 +206,7 @@ keras_mobilenet_v2.load_weights(weights_path)
 ######################################################################
 # In order to test our model, here we download an image of cat and
 # transform its format.
-img_url = "https://github.com/dmlc/mxnet.js/blob/master/data/cat.png?raw=true"
+img_url = "https://github.com/dmlc/mxnet.js/blob/main/data/cat.png?raw=true"
 img_name = "cat.png"
 img_path = download_testdata(img_url, img_name, module="data")
 image = Image.open(img_path).resize((224, 224))
@@ -257,32 +257,28 @@ test_target = "cpu"
 # Change target configuration.
 # Run `adb shell cat /proc/cpuinfo` to find the arch.
 arch = "arm64"
-target = "llvm -mtriple=%s-linux-android" % arch
-target_host = None
+target = tvm.target.Target("llvm -mtriple=%s-linux-android" % arch)
 
 if local_demo:
-    target_host = None
-    target = "llvm"
+    target = tvm.target.Target("llvm")
 elif test_target == "opencl":
-    target_host = target
-    target = "opencl"
+    target = tvm.target.Target("opencl", host=target)
 elif test_target == "vulkan":
-    target_host = target
-    target = "vulkan"
+    target = tvm.target.Target("vulkan", host=target)
 
 input_name = "input_1"
 shape_dict = {input_name: x.shape}
 mod, params = relay.frontend.from_keras(keras_mobilenet_v2, shape_dict)
 
 with tvm.transform.PassContext(opt_level=3):
-    lib = relay.build(mod, target=target, target_host=target_host, params=params)
+    lib = relay.build(mod, target=target, params=params)
 
 # After `relay.build`, you will get three return values: graph,
 # library and the new parameter, since we do some optimization that will
 # change the parameters but keep the result of model as the same.
 
 # Save the library at local temporary directory.
-tmp = util.tempdir()
+tmp = utils.tempdir()
 lib_fname = tmp.relpath("net.so")
 fcompile = ndk.create_shared if not local_demo else None
 lib.export_library(lib_fname, fcompile)
@@ -293,7 +289,7 @@ lib.export_library(lib_fname, fcompile)
 # With RPC, you can deploy the model remotely from your host machine
 # to the remote android device.
 
-tracker_host = os.environ.get("TVM_TRACKER_HOST", "0.0.0.0")
+tracker_host = os.environ.get("TVM_TRACKER_HOST", "127.0.0.1")
 tracker_port = int(os.environ.get("TVM_TRACKER_PORT", 9190))
 key = "android"
 
@@ -305,20 +301,20 @@ else:
     remote = tracker.request(key, priority=0, session_timeout=60)
 
 if local_demo:
-    ctx = remote.cpu(0)
+    dev = remote.cpu(0)
 elif test_target == "opencl":
-    ctx = remote.cl(0)
+    dev = remote.cl(0)
 elif test_target == "vulkan":
-    ctx = remote.vulkan(0)
+    dev = remote.vulkan(0)
 else:
-    ctx = remote.cpu(0)
+    dev = remote.cpu(0)
 
 # upload the library to remote device and load it
 remote.upload(lib_fname)
 rlib = remote.load_module("net.so")
 
 # create the remote runtime module
-module = runtime.GraphModule(rlib["default"](ctx))
+module = runtime.GraphModule(rlib["default"](dev))
 
 ######################################################################
 # Execute on TVM
@@ -336,7 +332,7 @@ top1 = np.argmax(out.asnumpy())
 print("TVM prediction top-1: {}".format(synset[top1]))
 
 print("Evaluate inference time cost...")
-ftimer = module.module.time_evaluator("run", ctx, number=1, repeat=10)
+ftimer = module.module.time_evaluator("run", dev, number=1, repeat=10)
 prof_res = np.array(ftimer().results) * 1000  # convert to millisecond
 print("Mean inference time (std dev): %.2f ms (%.2f ms)" % (np.mean(prof_res), np.std(prof_res)))
 

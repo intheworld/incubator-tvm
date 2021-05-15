@@ -28,7 +28,7 @@
 #include <tvm/relay/expr.h>
 #include <tvm/relay/expr_functor.h>
 #include <tvm/relay/transform.h>
-#include <tvm/support/logging.h>
+#include <tvm/runtime/logging.h>
 
 #include <iostream>
 #include <vector>
@@ -61,19 +61,30 @@ class LambdaLifter : public ExprMutator {
   explicit LambdaLifter(const IRModule& module) : module_(module) {}
 
   Expr VisitExpr_(const LetNode* let_node) final {
-    bool is_lambda = false;
-    if (auto func = let_node->value.as<FunctionNode>()) {
-      if (!func->HasNonzeroAttr(attr::kPrimitive)) {
-        is_lambda = true;
-        letrec_.push_back(let_node->var);
+    auto pre_visit = [this](const LetNode* op) {
+      bool is_lambda = false;
+      if (auto func = op->value.as<FunctionNode>()) {
+        if (!func->HasNonzeroAttr(attr::kPrimitive)) {
+          is_lambda = true;
+          this->letrec_.push_back(op->var);
+        }
       }
-    }
-    auto value = VisitExpr(let_node->value);
-    if (is_lambda) {
-      letrec_.pop_back();
-    }
-    auto body = VisitExpr(let_node->body);
-    return Let(let_node->var, value, body);
+      Expr value = this->VisitExpr(op->value);
+
+      if (is_lambda) {
+        this->letrec_.pop_back();
+      }
+    };
+    auto post_visit = [this](const LetNode* op) {
+      // Rely on the Memoizer to cache pre-visit values
+      Expr value = this->VisitExpr(op->value);
+      // Visit body and cache the op
+      Expr body = this->VisitExpr(op->body);
+      auto expr = GetRef<Expr>(op);
+      this->memo_[expr] = Let(op->var, value, body);
+    };
+    ExpandANormalForm(let_node, pre_visit, post_visit);
+    return memo_[GetRef<Expr>(let_node)];
   }
 
   Expr VisitExpr_(const CallNode* call_node) final {
@@ -82,7 +93,7 @@ class LambdaLifter : public ExprMutator {
       auto var = GetRef<Var>(var_node);
       if (!letrec_.empty() && var == letrec_.back()) {
         auto it = lambda_map_.find(var);
-        CHECK(it != lambda_map_.end());
+        ICHECK(it != lambda_map_.end());
         return Call(it->second, call->args, call_node->attrs, call_node->type_args);
       }
     }
@@ -111,6 +122,15 @@ class LambdaLifter : public ExprMutator {
       }
       captured_vars.push_back(var);
     }
+
+    Array<Var> typed_captured_vars;
+    Map<Var, Expr> rebinding_map;
+    for (auto free_var : captured_vars) {
+      auto var = Var(free_var->name_hint(), free_var->checked_type());
+      typed_captured_vars.push_back(var);
+      rebinding_map.Set(free_var, var);
+    }
+
     if (recursive) {
       if (!captured_vars.empty()) {
         Array<Expr> fvs;
@@ -122,6 +142,7 @@ class LambdaLifter : public ExprMutator {
         lambda_map_.emplace(letrec_.back(), global);
       }
     }
+
     auto body = Downcast<Function>(ExprMutator::VisitExpr_(func_node));
 
     // When performing this optimization there are two cases.
@@ -150,15 +171,34 @@ class LambdaLifter : public ExprMutator {
     if (captured_vars.size() == 0 && free_type_vars.size() == 0) {
       lifted_func = Function(body->params, body->body, body->ret_type, body->type_params);
     } else {
-      lifted_func = Function(captured_vars, body, func->func_type_annotation(), free_type_vars);
+      // When a closure is locally bound in a program, we have its full type information
+      // avalible to us.
+      //
+      // If we lift the closure out of its bound context it may have free variables which
+      // do not have type annotations.
+      //
+      // In this case we first type check the program assigning a type to all sub-expressions.
+      //
+      // We then change the un-annotated free variables into annotated free variables, use
+      // bind to go from unannotated free variables -> annotated free variables and then
+      // construct the "closure" function with fully annotated arguments, no longer relying
+      // on type inference.
+      auto before = Downcast<Function>(body)->params.size();
+      auto rebound_body = Function(func->params, Bind(body->body, rebinding_map), func->ret_type,
+                                   func->type_params, func->attrs, func->span);
+      auto after = Downcast<Function>(rebound_body)->params.size();
+      CHECK_EQ(before, after);
+      lifted_func =
+          Function(typed_captured_vars, rebound_body, func->func_type_annotation(), free_type_vars);
       lifted_func = MarkClosure(lifted_func);
     }
 
-    CHECK(lifted_func.defined());
+    ICHECK(lifted_func.defined());
 
     if (module_->ContainGlobalVar(name)) {
       const auto existing_func = module_->Lookup(name);
-      CHECK(tvm::StructuralEqual()(lifted_func, existing_func)) << "lifted function hash collision";
+      ICHECK(tvm::StructuralEqual()(lifted_func, existing_func))
+          << "lifted function hash collision";
       // If an identical function already exists, use its global var.
       global = module_->GetGlobalVar(name);
     } else {

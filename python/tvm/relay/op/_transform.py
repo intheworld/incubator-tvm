@@ -15,18 +15,21 @@
 # specific language governing permissions and limitations
 # under the License.
 """Backend compiler related feature registration"""
-# pylint: disable=invalid-name,unused-argument, len-as-condition, too-many-nested-blocks, too-many-local-variables, too-many-arguments
+# pylint: disable=invalid-name,unused-argument, len-as-condition, too-many-nested-blocks,
+# pylint: disable=too-many-local-variables, too-many-arguments, no-else-return
+
 from __future__ import absolute_import
+
 import tvm
-from tvm import te
-from tvm.te.hybrid import script
+from tvm import te, topi
 from tvm.runtime import convert
-from tvm import topi
-from tvm.topi.util import get_const_int, get_const_tuple
+from tvm.te.hybrid import script
+from tvm.topi.utils import get_const_int, get_const_tuple
+
 from . import op as _reg
 from . import strategy
-from .op import OpPattern
 from ._tensor import elemwise_shape_func
+from .op import OpPattern
 
 _reg.register_broadcast_schedule("broadcast_to")
 _reg.register_broadcast_schedule("broadcast_to_like")
@@ -64,6 +67,7 @@ _reg.register_injective_schedule("sparse_to_dense")
 _reg.register_injective_schedule("matrix_set_diag")
 _reg.register_injective_schedule("adv_index")
 
+
 # concatenate
 _reg.register_schedule("concatenate", strategy.schedule_concatenate)
 
@@ -79,23 +83,11 @@ _reg.register_injective_schedule("strided_set")
 # layout_transform
 _reg.register_injective_schedule("layout_transform")
 _reg.register_pattern("layout_transform", OpPattern.INJECTIVE)
+_reg.register_injective_schedule("auto_scheduler_layout_transform")
+_reg.register_pattern("auto_scheduler_layout_transform", OpPattern.INJECTIVE)
 
 # argwhere
-@_reg.register_compute("argwhere")
-def compute_argwhere(attrs, inputs, output_type):
-    """Compute definition of argwhere"""
-    output_shape = []
-    for s in output_type.shape:
-        if hasattr(s, "value"):
-            output_shape.append(s)
-        else:
-            # see Any, replace it with a var
-            output_shape.append(te.var("any_dim", "int32"))
-    new_output_type = tvm.relay.ty.TensorType(output_shape, "int32")
-    return [topi.argwhere(new_output_type, inputs[0])]
-
-
-_reg.register_schedule("argwhere", strategy.schedule_argwhere)
+_reg.register_strategy("argwhere", strategy.argwhere_strategy)
 
 # scatter
 @_reg.register_compute("scatter")
@@ -104,7 +96,41 @@ def compute_scatter(attrs, inputs, output_type):
     return [topi.scatter(inputs[0], inputs[1], inputs[2], attrs.axis)]
 
 
-_reg.register_schedule("scatter", strategy.schedule_scatter)
+_reg.register_strategy("scatter", strategy.scatter_strategy)
+
+# sparse_fill_empty_rows
+@_reg.register_compute("sparse_fill_empty_rows")
+def compute_sparse_fill_empty_rows(attrs, inputs, output_type):
+    """Compute definition of sparse_fill_empty_rows"""
+
+    return topi.sparse_fill_empty_rows(
+        inputs[0],
+        inputs[1],
+        inputs[2],
+        inputs[3],
+        output_type.fields[0].shape,
+        output_type.fields[1].shape,
+        output_type.fields[2].shape,
+    )
+
+
+_reg.register_strategy("sparse_fill_empty_rows", strategy.sparse_fill_empty_rows_strategy)
+
+# sparse_reshape
+@_reg.register_compute("sparse_reshape")
+def compute_reshape(attrs, inputs, output_type):
+    """Compute definition of sparse_reshape"""
+
+    return topi.sparse_reshape(
+        inputs[0],
+        inputs[1],
+        inputs[2],
+        output_type.fields[0].shape,
+        output_type.fields[1].shape,
+    )
+
+
+_reg.register_strategy("sparse_reshape", strategy.sparse_reshape_strategy)
 
 # scatter_add
 @_reg.register_compute("scatter_add")
@@ -113,7 +139,45 @@ def compute_scatter_add(attrs, inputs, output_type):
     return [topi.scatter_add(inputs[0], inputs[1], inputs[2], attrs.axis)]
 
 
-_reg.register_schedule("scatter_add", strategy.schedule_scatter_add)
+_reg.register_strategy("scatter_add", strategy.scatter_add_strategy)
+
+# scatter_nd
+@_reg.register_compute("scatter_nd")
+def compute_scatter_nd(attrs, inputs, output_type):
+    """Compute definition of scatter_nd"""
+    return [topi.scatter_nd(inputs[0], inputs[1], inputs[2], attrs.mode)]
+
+
+_reg.register_strategy("scatter_nd", strategy.scatter_nd_strategy)
+
+# cumsum
+@_reg.register_compute("cumsum")
+def compute_cumsum(attrs, inputs, output_type):
+    """Compute definition of cumsum"""
+    return [topi.cumsum(inputs[0], attrs.axis, attrs.dtype, attrs.exclusive)]
+
+
+_reg.register_strategy("cumsum", strategy.cumsum_strategy)
+_reg.register_shape_func("cumsum", False, elemwise_shape_func)
+
+# cumprod
+@_reg.register_compute("cumprod")
+def compute_cumprod(attrs, inputs, output_type):
+    """Compute definition of cumprod"""
+    return [topi.cumprod(inputs[0], attrs.axis, attrs.dtype, attrs.exclusive)]
+
+
+_reg.register_strategy("cumprod", strategy.cumprod_strategy)
+_reg.register_shape_func("cumprod", False, elemwise_shape_func)
+
+
+@_reg.register_compute("unique")
+def compute_unique(attrs, inputs, output_type):
+    """Compute definition of unique"""
+    return topi.unique(inputs[0], attrs.sorted, attrs.return_counts)
+
+
+_reg.register_strategy("unique", strategy.unique_strategy)
 
 #####################
 #  Shape functions  #
@@ -123,7 +187,10 @@ _reg.register_schedule("scatter_add", strategy.schedule_scatter_add)
 @script
 def _arange_shape_func(start, stop, step):
     out = output_tensor((1,), "int64")
-    out[0] = int64(ceil_div((int64(stop[0]) - int64(start[0])), int64(step[0])))
+    if step[0] < 0:
+        out[0] = int64(ceil_div((int64(start[0]) - int64(stop[0])), int64(-step[0])))
+    else:
+        out[0] = int64(ceil_div((int64(stop[0]) - int64(start[0])), int64(step[0])))
     return out
 
 
@@ -160,6 +227,8 @@ def _strided_slice_shape_func_input_shape(data_shape, begin, end, strides, slice
         else:
             if end[i] > data_shape[i]:
                 cend = int64(data_shape[i])
+            elif end[i] < -data_shape[i]:
+                cend = int64(-1)
             else:
                 cend = int64(end[i])
                 if cend < 0:
@@ -187,6 +256,31 @@ def strided_slice_shape_func(attrs, inputs, _):
             inputs[0], attrs.begin, attrs.end, attrs.strides, slice_mode
         )
     ]
+
+
+@script
+def _one_hot_shape_func(indices_shape, depth, axis):
+    in_ndim = indices_shape.shape[0]
+    out_ndim = in_ndim + 1
+    true_axis = in_ndim if axis == -1 else axis
+    indices_i = 0
+    out = output_tensor((out_ndim,), "int64")
+    for i in range(out_ndim):
+        if i == true_axis:
+            out[i] = int64(depth)
+        else:
+            out[i] = int64(indices_shape[indices_i])
+            indices_i += 1
+    return out
+
+
+@_reg.register_shape_func("one_hot", False)
+def one_hot_shape_func(attrs, inputs, _):
+    """
+    Shape func for one_hot
+    """
+    shape_func = [_one_hot_shape_func(inputs[0], convert(attrs.depth), convert(attrs.axis))]
+    return shape_func
 
 
 @script
@@ -296,7 +390,7 @@ def _take_no_axis_shape_func(indices_shape, out_ndim):
 
 
 @script
-def _take_with_axis_shape_func(data_shape, indices_shape, axis, out_ndim):
+def _take_with_axis_shape_func(data_shape, indices_shape, axis, batch_dims, out_ndim):
     out = output_tensor((out_ndim,), "int64")
     for i in const_range(axis):
         out[i] = data_shape[i]
@@ -305,10 +399,10 @@ def _take_with_axis_shape_func(data_shape, indices_shape, axis, out_ndim):
         for i in const_range(axis + 1, len(data_shape)):
             out[i - 1] = data_shape[i]
     else:
-        for i in const_range(len(indices_shape)):
-            out[axis + i] = indices_shape[i]
+        for i in const_range(len(indices_shape) - batch_dims):
+            out[axis + i] = indices_shape[i + batch_dims]
         for i in const_range(axis + 1, len(data_shape)):
-            out[len(indices_shape) + i - 1] = data_shape[i]
+            out[len(indices_shape) + i - 1 - batch_dims] = data_shape[i]
     return out
 
 
@@ -320,11 +414,35 @@ def take_shape_func(attrs, inputs, out_ndims):
     if attrs.axis is None:
         return [_take_no_axis_shape_func(inputs[1], out_ndims[0])]
     axis = get_const_int(attrs.axis)
+    batch_dims = get_const_int(attrs.batch_dims)
     data_ndim = int(inputs[0].shape[0])
+    if inputs[1].shape:
+        indicies_ndim = int(inputs[1].shape[0])
     if axis < 0:
         axis += data_ndim
     assert 0 <= axis < data_ndim
-    return [_take_with_axis_shape_func(*inputs, convert(axis), out_ndims[0])]
+    if batch_dims < 0:
+        batch_dims += indicies_ndim
+    return [_take_with_axis_shape_func(*inputs, convert(axis), convert(batch_dims), out_ndims[0])]
+
+
+@_reg.register_legalize("take")
+def legalize_dyn_topk(attrs, inputs, types):
+    """Legalize take op.
+    Parameters
+    ----------
+    attrs : tvm.ir.Attrs
+        Attributes of current op
+    inputs : list of tvm.relay.Expr
+        The args of the Relay expr to be legalized
+    types : list of types
+        List of input and output types
+    Returns
+    -------
+    result : tvm.relay.Expr
+        The legalized expr
+    """
+    return topi.take_legalize(attrs, inputs, types)
 
 
 @script
@@ -412,6 +530,65 @@ def argwhere_shape_func(attrs, inputs, out_ndims):
 
 _reg.register_shape_func("scatter", False, elemwise_shape_func)
 _reg.register_shape_func("scatter_add", False, elemwise_shape_func)
+
+
+@script
+def _sparse_fill_empty_rows_shape_func(sparse_indices, dense_shape):
+
+    new_sparse_indices_shape = output_tensor((2,), "int64")
+    new_sparse_values_shape = output_tensor((1,), "int64")
+    empty_row_indicator_shape = output_tensor((1,), "int64")
+    num_dense_rows = int64(dense_shape[0])
+
+    if int64(sparse_indices.shape[0]) == int64(0):  # Handle Empty Case
+        #  Total rows will equal dense_shape[0]
+        new_sparse_indices_shape[0] = num_dense_rows
+        new_sparse_indices_shape[1] = int64(sparse_indices.shape[1])
+        new_sparse_values_shape[0] = num_dense_rows
+        empty_row_indicator_shape[0] = num_dense_rows
+        return (new_sparse_indices_shape, new_sparse_values_shape, empty_row_indicator_shape)
+
+    else:
+        count = int64(sparse_indices.shape[0])  # Add count of all rows already in sparse_indices
+        for i in range(1, int64(sparse_indices.shape[0])):
+            index = int64(sparse_indices[i, 0])
+            prev_index = int64(sparse_indices[i - 1, 0] + 1)
+
+            if index > prev_index:
+                count += index - prev_index  # Add count of all rows between two consecutive indices
+
+        count += int64(sparse_indices[0, 0])  # Add count from 0 to first row id in sparse_indices
+        count += int64(
+            num_dense_rows - 1 - sparse_indices[sparse_indices.shape[0] - 1, 0]
+        )  # Add count from last row id to dense_shape - 1
+        new_sparse_indices_shape[0] = int64(count)
+        new_sparse_indices_shape[1] = int64(sparse_indices.shape[1])
+        new_sparse_values_shape[0] = int64(count)
+        empty_row_indicator_shape[0] = num_dense_rows
+        return (new_sparse_indices_shape, new_sparse_values_shape, empty_row_indicator_shape)
+
+
+@_reg.register_shape_func("sparse_fill_empty_rows", True)
+def sparse_fill_empty_rows_func(attrs, inputs, _):
+    return _sparse_fill_empty_rows_shape_func(inputs[0], inputs[2])
+
+
+@script
+def _sparse_reshape_shape_func(sparse_indices_shape, prev_shape_shape, new_shape_shape):
+    indices_shape = output_tensor((2,), "int64")
+    indices_shape[0] = int64(sparse_indices_shape[0])
+    indices_shape[1] = int64(new_shape_shape[0])
+    shape_tensor = output_tensor((1,), "int64")
+    shape_tensor[0] = int64(new_shape_shape[0])
+    return (indices_shape, shape_tensor)
+
+
+@_reg.register_shape_func("sparse_reshape", False)
+def sparse_reshape_shape_func(attrs, inputs, _):
+    """
+    Shape func for sparse_reshape.
+    """
+    return _sparse_reshape_shape_func(inputs[0], inputs[1], inputs[2])
 
 
 @script
@@ -570,10 +747,13 @@ def transpose_shape_func(attrs, inputs, _):
 
 
 @script
-def _squeeze_shape_func(data_shape, keep_axes):
+def _squeeze_shape_func(data_shape, keep_axes, remove_axes):
     out = output_tensor((len(keep_axes),), "int64")
     for i in const_range(len(keep_axes)):
         out[i] = data_shape[keep_axes[i]]
+
+    for i in const_range(len(remove_axes)):
+        assert data_shape[remove_axes[i]] == 1, "Removed dimension must have size 1"
 
     return out
 
@@ -585,10 +765,13 @@ def squeeze_shape_func(attrs, inputs, _):
     """
     axis = attrs.axis if attrs.axis is None else get_const_tuple(attrs.axis)
     keep_axes = []
+    remove_axes = []
     if axis is not None:
         for i in range(inputs[0].shape[0].value):
             if i not in axis:
                 keep_axes.append(i)
+            else:
+                remove_axes.append(i)
 
     # Due to current relay type system, it is possible even
     # a static kernel function needs shape function. To handle
@@ -596,7 +779,7 @@ def squeeze_shape_func(attrs, inputs, _):
     # for now.
     # TODO(kevinthesun): Enhance relay type system to avoid this.
     if keep_axes:
-        out = _squeeze_shape_func(inputs[0], convert(keep_axes))
+        out = _squeeze_shape_func(inputs[0], convert(keep_axes), convert(remove_axes))
     else:
         out = te.compute((), lambda *indices: 0)
     return [out]
@@ -700,6 +883,9 @@ def split_shape_func(attrs, inputs, _):
 
     axis = get_const_int(attrs.axis)
 
+    if axis < 0:
+        axis += get_const_int(inputs[0].shape[0])
+
     num_out = (
         indices_or_sections
         if isinstance(indices_or_sections, int)
@@ -773,6 +959,9 @@ def repeat_shape_func(attrs, inputs, _):
 
 @_reg.register_shape_func("broadcast_to_like", False)
 def broadcast_to_like_shape_func(attrs, inputs, _):
+    """
+    Shape func for broadcast_to_like.
+    """
     return [topi.math.identity(inputs[1])]
 
 
@@ -793,7 +982,93 @@ def _stack_shape_func(data_shape, axis, num_inputs):
 
 @_reg.register_shape_func("stack", False)
 def stack_shape_func(attrs, inputs, _):
+    """
+    Shape func for stack.
+    """
     axis = get_const_int(attrs.axis)
     if axis < 0:
         axis += inputs[0].shape[0] + 1
     return [_stack_shape_func(inputs[0], convert(axis), convert(len(inputs)))]
+
+
+@script
+def _broadcast_shape_tensors(shape_tensor1, shape_tensor2):
+    rank1 = shape_tensor1.shape[0]
+    rank2 = shape_tensor2.shape[0]
+    out_rank = max(rank1, rank2)
+    bcast_shape_tensor = output_tensor((out_rank,), "int64")
+
+    for index in const_range(out_rank):
+        dim1 = int64(1)
+        dim2 = int64(1)
+
+        if rank1 == out_rank:
+            dim1 = shape_tensor1[index]
+        elif rank1 - (out_rank - index) >= 0:
+            dim1 = shape_tensor1[rank1 - (out_rank - index)]
+
+        if rank2 == out_rank:
+            dim2 = shape_tensor2[index]
+        elif rank2 - (out_rank - index) >= 0:
+            dim2 = shape_tensor2[rank2 - (out_rank - index)]
+
+        assert dim1 == dim2 or dim1 == 1 or dim2 == 1, "Invalid broadcast shapes"
+        bcast_shape_tensor[index] = max(dim1, dim2)
+
+    return bcast_shape_tensor
+
+
+@_reg.register_shape_func("where", False)
+def where_shape_func(attrs, inputs, _):
+    """
+    Shape func for where.
+    """
+
+    def ensure_tensor(tensor):
+        if len(tensor.shape) == 0:
+            return topi.full((1,), "int64", 1)
+        return tensor
+
+    cond_shape = ensure_tensor(inputs[0])
+    x_shape = ensure_tensor(inputs[1])
+    y_shape = ensure_tensor(inputs[2])
+
+    bcast_shape = _broadcast_shape_tensors(x_shape, y_shape)
+    out_shape = _broadcast_shape_tensors(bcast_shape, cond_shape)
+
+    return [out_shape]
+
+
+@script
+def _unique_shape(data_shape):
+    unique_shape = output_tensor((1,), "int64")
+    indices_shape = output_tensor((1,), "int64")
+    num_unique_shape = output_tensor((1,), "int64")
+    unique_shape[0] = data_shape[0]
+    indices_shape[0] = data_shape[0]
+    num_unique_shape[0] = int64(1)
+    return (unique_shape, indices_shape, num_unique_shape)
+
+
+@script
+def _unique_with_counts_shape(data_shape):
+    unique_shape = output_tensor((1,), "int64")
+    indices_shape = output_tensor((1,), "int64")
+    num_unique_shape = output_tensor((1,), "int64")
+    counts_shape = output_tensor((1,), "int64")
+    unique_shape[0] = data_shape[0]
+    indices_shape[0] = data_shape[0]
+    num_unique_shape[0] = int64(1)
+    counts_shape[0] = data_shape[0]
+    return (unique_shape, indices_shape, num_unique_shape, counts_shape)
+
+
+@_reg.register_shape_func("unique", False)
+def unique_shape_func(attrs, inputs, _):
+    """
+    Shape func for unique operator.
+    """
+    if attrs.return_counts:
+        return _unique_with_counts_shape(inputs[0])
+    else:
+        return _unique_shape(inputs[0])

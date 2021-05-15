@@ -63,12 +63,12 @@ inline std::vector<int64_t> GetReduceAxes(const uint32_t indim, const Array<Inte
     }
 
     // Check out of bounds error
-    CHECK(axis >= 0) << "Axis out of bounds in reduce operator.";
-    CHECK(axis < indim) << "Axis out of bounds in reduce operator.";
+    ICHECK(axis >= 0) << "Axis out of bounds in reduce operator.";
+    ICHECK(axis < indim) << "Axis out of bounds in reduce operator.";
     in_axes.push_back(axis);
   }
 
-  CHECK(in_axes[in_axes.size() - 1] < indim)
+  ICHECK(in_axes[in_axes.size() - 1] < indim)
       << "Reduction axis " << in_axes[in_axes.size() - 1] << " exceeds input dimensions " << indim;
 
   std::sort(in_axes.begin(), in_axes.end());
@@ -91,7 +91,7 @@ inline std::vector<int64_t> GetReduceAxes(const uint32_t indim, const Array<Inte
 
 // Get axis under exclude condition.
 Array<Integer> GetExcludeAxes(size_t indim, const Array<Integer>& inaxis) {
-  CHECK(inaxis.defined()) << "Cannot set exclude when axis=None";
+  ICHECK(inaxis.defined()) << "Cannot set exclude when axis=None";
   std::vector<bool> axis_flag(indim, true);
   for (auto i : inaxis) {
     int64_t axis = i->value;
@@ -99,8 +99,8 @@ Array<Integer> GetExcludeAxes(size_t indim, const Array<Integer>& inaxis) {
       axis = axis + static_cast<int64_t>(indim);
     }
     // Check out of bounds error
-    CHECK_GE(axis, 0) << "Axis out of bounds in reduce operator.";
-    CHECK_LT(axis, static_cast<int64_t>(indim)) << "Axis out of bounds in reduce operator.";
+    ICHECK_GE(axis, 0) << "Axis out of bounds in reduce operator.";
+    ICHECK_LT(axis, static_cast<int64_t>(indim)) << "Axis out of bounds in reduce operator.";
     axis_flag[axis] = false;
   }
 
@@ -125,19 +125,17 @@ Array<Array<Layout>> ReduceInferCorrectLayout(const Attrs& attrs,
   // Get the reduce axes.
   Array<Array<IndexExpr>> old_in_shapes;
   for (auto old_in_t : old_in_types) {
-    CHECK(old_in_t.as<TensorTypeNode>());
+    ICHECK(old_in_t.as<TensorTypeNode>());
     old_in_shapes.push_back(old_in_t.as<TensorTypeNode>()->shape);
   }
   uint32_t indim = old_in_shapes[0].size();
   auto r_axes = GetReduceAxes(indim, params->axis, params->exclude);
 
-  Layout ret = Layout::Undef();
-  if (new_in_layouts.defined() && r_axes.size()) {
-    // Adapt to new layout. The axis has to change. Record original reduce axes. Convert to the
-    // modified layout axes.
-    CHECK_EQ(new_in_layouts.size(), 1);
-    CHECK_EQ(old_in_layouts.size(), 1);
+  Layout inferred_in = Layout::Undef();
+  Layout inferred_out = Layout::Undef();
 
+  // Infer [in_layout, out_layout, new_r_axes] from old_in_layout or new_in_layout
+  auto infer = [&](const Layout& layout) {
     // 1) Collect the original axes
     std::unordered_set<std::string> old_r_dims;
     for (auto r_axis : r_axes) {
@@ -146,9 +144,10 @@ Array<Array<Layout>> ReduceInferCorrectLayout(const Attrs& attrs,
 
     // 2) Collect the new axes by walking new_layout.
     tvm::Array<tvm::Integer> new_r_axes;
-    std::string new_layout_string = "";
+    std::string inferred_in_string = "";
+    std::string inferred_out_string = "";
     int axis_index = 0;
-    for (auto iter_var : new_in_layouts[0]->axes) {
+    for (auto iter_var : layout->axes) {
       const auto& layout_axis = LayoutAxis::Get(iter_var);
       const std::string& layout_dim = layout_axis.name();
       if (old_r_dims.count(layout_dim)) {
@@ -156,28 +155,47 @@ Array<Array<Layout>> ReduceInferCorrectLayout(const Attrs& attrs,
       }
       // Collect only the primal axis.
       if (layout_axis.IsPrimal()) {
-        new_layout_string += layout_dim;
+        if (!old_r_dims.count(layout_dim) || params->keepdims) {
+          inferred_out_string += layout_dim;
+        }
+        inferred_in_string += layout_dim;
         axis_index++;
       }
     }
 
     // 3) Set the new axis and layout.
-    ret = Layout(new_layout_string);
+    return std::make_tuple(Layout(inferred_in_string), Layout(inferred_out_string), new_r_axes);
+  };
+
+  std::string new_layout_string;
+  Array<Integer> new_r_axes;
+
+  if (new_in_layouts.defined() && r_axes.size()) {
+    // Adapt to new layout. The axis has to change. Record original reduce axes. Convert to the
+    // modified layout axes.
+    ICHECK_EQ(new_in_layouts.size(), 1);
+    ICHECK_EQ(old_in_layouts.size(), 1);
+
+    // Get inferred_in and inferred_out from new_in_layout.
+    std::tie(inferred_in, inferred_out, new_r_axes) = infer(new_in_layouts[0]);
     params->axis = new_r_axes;
   } else if (old_in_layouts.defined()) {
-    // If the new layout is undefined, set the old layout as the inferred layout.
-    CHECK_EQ(old_in_layouts.size(), 1);
-    ret = old_in_layouts[0];
+    ICHECK_EQ(old_in_layouts.size(), 1);
+
+    // If the new layout is undefined, get inferred_in and inferred_out from old_in_layout.
+    if (old_in_layouts[0].defined()) {
+      std::tie(inferred_in, inferred_out, std::ignore) = infer(old_in_layouts[0]);
+    }
   }
 
-  return Array<Array<Layout>>{{ret}, {ret}};
+  return Array<Array<Layout>>{{inferred_in}, {inferred_out}};
 }
 
 template <typename F>
 Array<te::Tensor> ReduceCompute(const Attrs& attrs, const Array<te::Tensor>& inputs,
                                 const Type& out_type, F f) {
   const ReduceAttrs* param = attrs.as<ReduceAttrs>();
-  CHECK(param != nullptr);
+  ICHECK(param != nullptr);
   if (inputs[0]->shape.size() == 0) {
     return {topi::identity(inputs[0])};
   }
@@ -221,8 +239,8 @@ inline std::vector<IndexExpr> ReduceShapeImpl(const std::vector<IndexExpr>& in_s
   }
 
   if (is_dynamic_input) {
-    CHECK(reporter->Assert(max_shape <
-                           tir::make_const(DataType::Int(64), std::numeric_limits<int32_t>::max())))
+    ICHECK(reporter->Assert(
+        max_shape < tir::make_const(DataType::Int(64), std::numeric_limits<int32_t>::max())))
         << "The maximum possible index of reduced shape cannot be more than int32 max.";
   }
 
@@ -259,14 +277,14 @@ inline std::vector<IndexExpr> ReduceShapeImpl(const std::vector<IndexExpr>& in_s
  */
 bool ArgReduceRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                   const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 2);
+  ICHECK_EQ(types.size(), 2);
   const auto* data = types[0].as<TensorTypeNode>();
   if (data == nullptr) return false;
-  CHECK(static_cast<int>(data->shape.size()) != 0);
+  ICHECK(static_cast<int>(data->shape.size()) != 0);
   std::vector<IndexExpr> in_shape(data->shape.begin(), data->shape.end());
 
   const ReduceAttrs* param = attrs.as<ReduceAttrs>();
-  CHECK(param != nullptr);
+  ICHECK(param != nullptr);
 
   // assign output type and shape
   auto oshape = ReduceShapeImpl(in_shape, param, reporter);
@@ -283,13 +301,13 @@ bool ArgReduceRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
  */
 bool ReduceRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 2);
+  ICHECK_EQ(types.size(), 2);
   const auto* data = types[0].as<TensorTypeNode>();
   if (data == nullptr) return false;
   std::vector<IndexExpr> in_shape(data->shape.begin(), data->shape.end());
 
   const ReduceAttrs* param = attrs.as<ReduceAttrs>();
-  CHECK(param != nullptr);
+  ICHECK(param != nullptr);
 
   // assign output type and shape
   auto oshape = ReduceShapeImpl(in_shape, param, reporter);
@@ -475,7 +493,11 @@ Array<te::Tensor> ProdCompute(const Attrs& attrs, const Array<te::Tensor>& input
   return ReduceCompute(attrs, inputs, out_type, topi::prod);
 }
 
-RELAY_REGISTER_REDUCE_OP("prod")
+TVM_REGISTER_GLOBAL("relay.op._make.prod").set_body_typed(Prod);
+
+RELAY_REGISTER_OP("prod")
+    .set_num_inputs(1)
+    .add_argument("data", "Tensor", "The input tensor.")
     .describe(R"code(Computes the products of array elements over given axes.
 
 Example::
@@ -501,7 +523,7 @@ Array<te::Tensor> MeanCompute(const Attrs& attrs, const Array<te::Tensor>& input
                               const Type& out_type) {
   IndexExpr count = tir::make_const(inputs[0]->dtype, 1);
   const ReduceAttrs* param = attrs.as<ReduceAttrs>();
-  CHECK(param != nullptr);
+  ICHECK(param != nullptr);
   auto axes = param->axis;
   for (int64_t i : GetReduceAxes(inputs[0]->shape.size(), param->axis, param->exclude)) {
     count *= inputs[0]->shape[i];
@@ -537,19 +559,19 @@ Example::
 
 bool VarianceRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                  const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 3);
+  ICHECK_EQ(types.size(), 3);
   const auto* data = types[0].as<TensorTypeNode>();
   if (data == nullptr) return false;
-  CHECK(static_cast<int>(data->shape.size()) != 0);
+  ICHECK(static_cast<int>(data->shape.size()) != 0);
   const auto* mean = types[1].as<TensorTypeNode>();
   if (mean == nullptr) return false;
 
   std::vector<IndexExpr> in_shape(data->shape.begin(), data->shape.end());
   std::vector<IndexExpr> mean_shape(mean->shape.begin(), mean->shape.end());
-  CHECK_EQ(in_shape.size(), mean_shape.size());
+  ICHECK_EQ(in_shape.size(), mean_shape.size());
 
   const VarianceAttrs* param = attrs.as<VarianceAttrs>();
-  CHECK(param != nullptr);
+  ICHECK(param != nullptr);
 
   // assign output type and shape
   auto oshape = ReduceShapeImpl(in_shape, param, reporter);
@@ -561,7 +583,7 @@ Array<te::Tensor> VarianceCompute(const Attrs& attrs, const Array<te::Tensor>& i
                                   const Type& out_type) {
   IndexExpr count = tir::make_const(inputs[0]->dtype, 1);
   const VarianceAttrs* param = attrs.as<VarianceAttrs>();
-  CHECK(param != nullptr);
+  ICHECK(param != nullptr);
   auto axes = param->axis;
   bool unbiased = param->unbiased;
   auto data = inputs[0];
@@ -573,10 +595,11 @@ Array<te::Tensor> VarianceCompute(const Attrs& attrs, const Array<te::Tensor>& i
     count -= 1;
   }
   std::vector<Integer> expand_shape;
-  auto sq_diff = topi::power(topi::subtract(data, mean), 2);
+  auto diff = topi::subtract(data, mean);
+  auto sq_diff = topi::multiply(diff, diff);
   if (param->exclude) {
     axes = GetExcludeAxes(sq_diff->shape.size(), param->axis);
-    CHECK_NE(axes.size(), 0);
+    ICHECK_NE(axes.size(), 0);
   }
   auto var = topi::divide(topi::sum(sq_diff, axes, param->keepdims, false), count);
 
@@ -594,9 +617,7 @@ Expr MakeVariance(Expr data, Expr mean, Array<Integer> axis, bool keepdims, bool
   return Call(op, {data, mean}, Attrs(attrs), {});
 }
 
-TVM_REGISTER_GLOBAL("relay.op._make._variance").set_body([](const TVMArgs& args, TVMRetValue* rv) {
-  runtime::detail::unpack_call<Expr, 6>(MakeVariance, args, rv);
-});
+TVM_REGISTER_GLOBAL("relay.op._make._variance").set_body_typed(MakeVariance);
 
 RELAY_REGISTER_OP("variance")
     .describe(R"code(Computes the variance of array elements over given axes.

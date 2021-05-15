@@ -21,9 +21,9 @@ from tvm import te
 
 import tvm.testing
 
-from tvm.contrib import util
+from tvm.contrib import utils
 
-header_file_dir_path = util.tempdir()
+header_file_dir_path = utils.tempdir()
 
 
 def gen_engine_header():
@@ -58,7 +58,7 @@ def generate_engine_module():
     import tvm.runtime._ffi_api
 
     gen_engine_header()
-    csource_module = tvm.runtime._ffi_api.CSourceModuleCreate(code, "cc", "", None)
+    csource_module = tvm.runtime._ffi_api.CSourceModuleCreate(code, "cc", [], None)
     return csource_module
 
 
@@ -80,21 +80,22 @@ def test_mod_export():
                 synthetic_llvm_mod, "llvm", params=synthetic_llvm_params
             )
 
-        from tvm.contrib import util
+        from tvm.contrib import utils
 
-        temp = util.tempdir()
+        temp = utils.tempdir()
         if obj_format == ".so":
             file_name = "deploy_lib.so"
         else:
             assert obj_format == ".tar"
             file_name = "deploy_lib.tar"
         path_lib = temp.relpath(file_name)
-        synthetic_gpu_lib.imported_modules[0].import_module(synthetic_llvm_cpu_lib)
+        synthetic_gpu_lib.import_module(synthetic_llvm_cpu_lib)
         synthetic_gpu_lib.export_library(path_lib)
         loaded_lib = tvm.runtime.load_module(path_lib)
         assert loaded_lib.type_key == "library"
         assert loaded_lib.imported_modules[0].type_key == "cuda"
-        assert loaded_lib.imported_modules[0].imported_modules[0].type_key == "library"
+        #  dso modules are merged together
+        assert len(loaded_lib.imported_modules) == 1
 
     def verify_multi_dso_mod_export(obj_format):
         for device in ["llvm"]:
@@ -102,30 +103,28 @@ def test_mod_export():
                 print("skip because %s is not enabled..." % device)
                 return
 
-        synthetic_mod, synthetic_params = relay.testing.synthetic.get_workload()
-        with tvm.transform.PassContext(opt_level=3):
-            _, synthetic_cpu_lib, _ = relay.build_module.build(
-                synthetic_mod, "llvm", params=synthetic_params
-            )
-
         A = te.placeholder((1024,), name="A")
         B = te.compute(A.shape, lambda *i: A(*i) + 1.0, name="B")
         s = te.create_schedule(B.op)
-        f = tvm.build(s, [A, B], "llvm", name="myadd")
-        from tvm.contrib import util
+        mod0 = tvm.build(s, [A, B], "llvm", name="myadd0")
+        mod1 = tvm.build(s, [A, B], "llvm", name="myadd1")
 
-        temp = util.tempdir()
+        from tvm.contrib import utils
+
+        temp = utils.tempdir()
         if obj_format == ".so":
             file_name = "deploy_lib.so"
         else:
             assert obj_format == ".tar"
             file_name = "deploy_lib.tar"
         path_lib = temp.relpath(file_name)
-        synthetic_cpu_lib.import_module(f)
-        synthetic_cpu_lib.export_library(path_lib)
+
+        mod0.import_module(mod1)
+        mod0.export_library(path_lib)
         loaded_lib = tvm.runtime.load_module(path_lib)
         assert loaded_lib.type_key == "library"
-        assert loaded_lib.imported_modules[0].type_key == "library"
+        # dso modules are merged
+        assert len(loaded_lib.imported_modules) == 0
 
     def verify_json_import_dso(obj_format):
         for device in ["llvm"]:
@@ -153,9 +152,9 @@ def test_mod_export():
             + "mul 6 inputs: 5 3 shape: 10 10"
         )
 
-        from tvm.contrib import util
+        from tvm.contrib import utils
 
-        temp = util.tempdir()
+        temp = utils.tempdir()
         subgraph_path = temp.relpath("subgraph.examplejson")
         with open(subgraph_path, "w") as f:
             f.write(subgraph_json)
@@ -204,9 +203,9 @@ def test_mod_export():
         s = te.create_schedule(B.op)
         f = tvm.build(s, [A, B], "c", name="myadd")
         engine_module = generate_engine_module()
-        from tvm.contrib import util
+        from tvm.contrib import utils
 
-        temp = util.tempdir()
+        temp = utils.tempdir()
         file_name = "deploy_lib.so"
         path_lib = temp.relpath(file_name)
         synthetic_cpu_lib.import_module(f)
@@ -215,8 +214,8 @@ def test_mod_export():
         synthetic_cpu_lib.export_library(path_lib, fcompile=False, **kwargs)
         loaded_lib = tvm.runtime.load_module(path_lib)
         assert loaded_lib.type_key == "library"
-        assert loaded_lib.imported_modules[0].type_key == "library"
-        assert loaded_lib.imported_modules[1].type_key == "library"
+        # dso modules are merged
+        assert len(loaded_lib.imported_modules) == 0
 
     for obj_format in [".so", ".tar"]:
         verify_gpu_mod_export(obj_format)

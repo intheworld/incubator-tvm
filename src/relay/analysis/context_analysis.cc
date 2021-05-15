@@ -67,7 +67,7 @@ namespace relay {
 
 using PackedAnalysisResultMap = Map<Expr, Array<Integer>>;
 using AnalysisResultMap =
-    std::unordered_map<Expr, TVMContext, runtime::ObjectPtrHash, runtime::ObjectPtrEqual>;
+    std::unordered_map<Expr, Device, runtime::ObjectPtrHash, runtime::ObjectPtrEqual>;
 
 namespace analysis {
 
@@ -90,21 +90,22 @@ class DeviceDomain {
  public:
   // Construct an empty domain.
   DeviceDomain() {
-    ctx_.device_type = static_cast<DLDeviceType>(-1);
-    ctx_.device_id = -1;
+    device_.device_type = static_cast<DLDeviceType>(-1);
+    device_.device_id = -1;
   }
 
   // Construct a domain based on a given context.
-  explicit DeviceDomain(const TVMContext& ctx) : ctx_(ctx) {}
+  explicit DeviceDomain(const Device& dev) : device_(dev) {}
 
   // Check if the current domain is empty.
   bool IsEmptyDomain() const {
-    return static_cast<int>(ctx_.device_type) == -1 && ctx_.device_id == -1;
+    return static_cast<int>(device_.device_type) == -1 && device_.device_id == -1;
   }
 
   // Check if the current domain equals the other one.
   bool operator==(const DeviceDomain& other) const {
-    return ctx_.device_type == other.ctx_.device_type && ctx_.device_id == other.ctx_.device_id;
+    return device_.device_type == other.device_.device_type &&
+           device_.device_id == other.device_.device_id;
   }
 
   bool operator!=(const DeviceDomain& other) const { return !(*this == other); }
@@ -116,8 +117,8 @@ class DeviceDomain {
       if (domain->IsEmptyDomain()) {
         return (size_t)(domain.get());
       } else {
-        size_t const h1(std::hash<int>()(static_cast<int>(domain->ctx_.device_type)));
-        size_t const h2(std::hash<int>()(domain->ctx_.device_id));
+        size_t const h1(std::hash<int>()(static_cast<int>(domain->device_.device_type)));
+        size_t const h2(std::hash<int>()(domain->device_.device_id));
         return h1 ^ (h2 << 1);
       }
     }
@@ -136,7 +137,7 @@ class DeviceDomain {
   };
 
   /* \brief The device to be assigned to the current domain. */
-  TVMContext ctx_;
+  Device device_;
 
   friend DeviceDomainPtr Join(const DeviceDomainPtr& lhs, const DeviceDomainPtr& rhs);
   friend class ContextAnalyzer;
@@ -151,7 +152,7 @@ DeviceDomainPtr Join(const DeviceDomainPtr& lhs, const DeviceDomainPtr& rhs) {
   } else if (rhs->IsEmptyDomain()) {
     return lhs;
   } else {
-    CHECK(*lhs.get() == *rhs.get()) << "All expressions must have a singular device to unify";
+    ICHECK(*lhs.get() == *rhs.get()) << "All expressions must have a singular device to unify";
     return lhs;
   }
 }
@@ -163,13 +164,13 @@ DeviceDomainPtr Join(const DeviceDomainPtr& lhs, const DeviceDomainPtr& rhs) {
 class ContextAnalyzer : public MixedModeVisitor {
  public:
   ContextAnalyzer(const IRModule& mod, const GlobalVar& current_func,
-                  const TVMContext& default_context)
+                  const Device& default_device)
       : MixedModeVisitor(9),  // the number of repeated visits a node can perform
         mod_(mod),
         current_func_(current_func),
-        default_context_(default_context) {
-    cpu_ctx_.device_type = kDLCPU;
-    cpu_ctx_.device_id = 0;
+        default_device_(default_device) {
+    cpu_dev_.device_type = kDLCPU;
+    cpu_dev_.device_id = 0;
   }
 
   // Create an empty domain.
@@ -177,8 +178,8 @@ class ContextAnalyzer : public MixedModeVisitor {
   DeviceDomainPtr Bottom() { return std::make_shared<DeviceDomain>(DeviceDomain()); }
 
   // Create a domain with the given device context.
-  DeviceDomainPtr DeviceType(const TVMContext& ctx) {
-    return std::make_shared<DeviceDomain>(DeviceDomain(ctx));
+  DeviceDomainPtr DeviceType(const Device& dev) {
+    return std::make_shared<DeviceDomain>(DeviceDomain(dev));
   }
 
   // Find the root of a device.
@@ -233,19 +234,19 @@ class ContextAnalyzer : public MixedModeVisitor {
   // attribute of other nodes can be propagated from it.
   void UnifyDeviceCopy(const std::vector<Expr>& inps, const std::vector<Expr>& outputs,
                        DLDeviceType src_dev_type, DLDeviceType dst_dev_type) {
-    TVMContext src_ctx;
-    src_ctx.device_type = src_dev_type;
-    src_ctx.device_id = 0;
-    auto src_domain = DeviceType(src_ctx);
+    Device src_dev;
+    src_dev.device_type = src_dev_type;
+    src_dev.device_id = 0;
+    auto src_domain = DeviceType(src_dev);
     for (const auto& it : inps) {
       auto lhs = DeviceFor(it);
       Unify(lhs, src_domain);
     }
 
-    TVMContext dst_ctx;
-    dst_ctx.device_type = dst_dev_type;
-    dst_ctx.device_id = 0;
-    auto dst_domain = DeviceType(dst_ctx);
+    Device dst_dev;
+    dst_dev.device_type = dst_dev_type;
+    dst_dev.device_id = 0;
+    auto dst_domain = DeviceType(dst_dev);
     for (const auto& it : outputs) {
       auto lhs = DeviceFor(it);
       Unify(lhs, dst_domain);
@@ -311,7 +312,7 @@ class ContextAnalyzer : public MixedModeVisitor {
       auto ty = let->value->checked_type();
       if (ty->IsInstance<FuncTypeNode>()) {
         auto gv = ExtractClosure(let);
-        CHECK(gv.defined() && gv->IsInstance<GlobalVarNode>());
+        ICHECK(gv.defined() && gv->IsInstance<GlobalVarNode>());
         closures_[let->var] = Downcast<GlobalVar>(gv);
       }
 
@@ -387,9 +388,9 @@ class ContextAnalyzer : public MixedModeVisitor {
     for (const auto& it : expr_to_device_) {
       auto device = Lookup(it.second);
       if (device->IsEmptyDomain()) {
-        ret[it.first] = default_context_;
+        ret[it.first] = default_device_;
       } else {
-        ret[it.first] = device->ctx_;
+        ret[it.first] = device->device_;
       }
     }
 
@@ -444,7 +445,7 @@ class ContextAnalyzer : public MixedModeVisitor {
 
   // Process device copy call node
   void UnifyDeviceCopyCall(const CallNode* call) {
-    CHECK_EQ(call->args.size(), 1U);
+    ICHECK_EQ(call->args.size(), 1U);
 
     std::vector<Expr> inps{call->args[0]};
     std::vector<Expr> outs{GetRef<Call>(call)};
@@ -455,13 +456,13 @@ class ContextAnalyzer : public MixedModeVisitor {
       inps.push_back(fn->params[0]);
       outs.push_back(call->op);
       Expr body = fn->body;
-      CHECK(body->IsInstance<CallNode>() && IsDeviceCopy(body));
+      ICHECK(body->IsInstance<CallNode>() && IsDeviceCopy(body));
       Call call_body = Downcast<Call>(body);
       attrs = call_body->attrs.as<DeviceCopyAttrs>();
     } else {
       attrs = call->attrs.as<DeviceCopyAttrs>();
     }
-    CHECK(attrs != nullptr);
+    ICHECK(attrs != nullptr);
     src_dev_type = static_cast<DLDeviceType>(attrs->src_dev_type);
     dst_dev_type = static_cast<DLDeviceType>(attrs->dst_dev_type);
 
@@ -474,37 +475,37 @@ class ContextAnalyzer : public MixedModeVisitor {
 
   void UnifyAllocStorageCall(const CallNode* call) {
     // [size, alignment]
-    CHECK_EQ(call->args.size(), 2U);
+    ICHECK_EQ(call->args.size(), 2U);
 
     // The arguments of alloc storage should be on CPU.
     for (int i = 0; i < 2; i++) {
-      Unify(DeviceFor(call->args[i]), DeviceType(cpu_ctx_));
+      Unify(DeviceFor(call->args[i]), DeviceType(cpu_dev_));
       MixedModeVisitor::VisitExpr(call->args[i]);
     }
-    TVMContext ctx;
+    Device dev;
     const auto* attrs = call->attrs.as<AllocStorageAttrs>();
-    ctx.device_type = static_cast<DLDeviceType>(attrs->device_type);
-    ctx.device_id = attrs->device_id;
-    Unify(DeviceFor(GetRef<Call>(call)), DeviceType(ctx));
+    dev.device_type = static_cast<DLDeviceType>(attrs->device_type);
+    dev.device_id = attrs->device_id;
+    Unify(DeviceFor(GetRef<Call>(call)), DeviceType(dev));
   }
 
   void UnifyAllocTensorCall(const CallNode* call) {
     // [storage, offset, shape]
-    CHECK_EQ(call->args.size(), 3U);
+    ICHECK_EQ(call->args.size(), 3U);
 
     Expr storage = call->args[0];
     Expr shape = call->args[1];
     Unify(DeviceFor(storage), DeviceFor(GetRef<Call>(call)));
 
     // The shape for alloc_tensor should be on CPU.
-    Unify(DeviceFor(shape), DeviceType(cpu_ctx_));
+    Unify(DeviceFor(shape), DeviceType(cpu_dev_));
     MixedModeVisitor::VisitExpr(shape);
   }
 
   void UnifyShapeFuncCall(const CallNode* call) {
     // [func, inputs, outputs]
-    CHECK_EQ(call->args.size(), 3U);
-    auto shape_func_domain = DeviceType(cpu_ctx_);
+    ICHECK_EQ(call->args.size(), 3U);
+    auto shape_func_domain = DeviceType(cpu_dev_);
 
     // No need to unify the op of a shape_func as shape_func doesn't
     // invoke the op itself. It should be handled by invoke_tvm_op.
@@ -523,7 +524,7 @@ class ContextAnalyzer : public MixedModeVisitor {
 
   void UnifyInvokeTVMOpCall(const CallNode* call) {
     // [op, inputs, outputs]
-    CHECK_EQ(call->args.size(), 3U);
+    ICHECK_EQ(call->args.size(), 3U);
     Tuple inps = Downcast<Tuple>(call->args[1]);
     Tuple outputs = Downcast<Tuple>(call->args[2]);
     UnifyCall(call->args[0], inps->fields, outputs->fields, Bottom());
@@ -532,25 +533,25 @@ class ContextAnalyzer : public MixedModeVisitor {
 
   void UnifyShapeOfCall(const CallNode* call) {
     // vm shape_of is always on the CPU.
-    CHECK_EQ(call->args.size(), 1U);
+    ICHECK_EQ(call->args.size(), 1U);
     MixedModeVisitor::VisitExpr(call->args[0]);
     // Note we don't unify the input of a shape_of with the cpu domain. This is
     // because vm.shape_of has a native instruction to compute the shape of
     // a tensor regardless its device type.
     // Instead, the device type of the input is left for its other consumers to
     // unify or it will fallback to the default context.
-    Unify(DeviceFor(GetRef<Call>(call)), DeviceType(cpu_ctx_));
+    Unify(DeviceFor(GetRef<Call>(call)), DeviceType(cpu_dev_));
   }
 
   void UnifyReshapeTensorCall(const CallNode* call) {
     // [data, shape]
-    CHECK_EQ(call->args.size(), 2U);
+    ICHECK_EQ(call->args.size(), 2U);
     Expr data = call->args[0];
     Expr shape = call->args[1];
     Unify(DeviceFor(GetRef<Call>(call)), DeviceFor(data));
 
     // The shape field of reshape_tensor is always on the CPU.
-    Unify(DeviceFor(shape), DeviceType(cpu_ctx_));
+    Unify(DeviceFor(shape), DeviceType(cpu_dev_));
     MixedModeVisitor::VisitExpr(data);
     MixedModeVisitor::VisitExpr(shape);
   }
@@ -583,10 +584,10 @@ class ContextAnalyzer : public MixedModeVisitor {
   // Invoke a global function.
   void UnifyGlobalVarCall(const CallNode* call) {
     auto device = DeviceFor(GetRef<Call>(call));
-    CHECK(mod_.defined()) << "Cannot analyze context on a globalvar without module";
+    ICHECK(mod_.defined()) << "Cannot analyze context on a globalvar without module";
     GlobalVar gv = Downcast<GlobalVar>(call->op);
     auto func = Downcast<Function>(mod_->Lookup(gv));
-    CHECK_EQ(call->args.size(), func->params.size())
+    ICHECK_EQ(call->args.size(), func->params.size())
         << "The number of arguments doesn't match the number of parameters of the function.";
 
     for (size_t i = 0; i < call->args.size(); i++) {
@@ -596,14 +597,14 @@ class ContextAnalyzer : public MixedModeVisitor {
 
       // Save the the arg to function mapping for closures as it will
       // be invoked/unified later.
-      CHECK(arg->checked_type().defined())
+      ICHECK(arg->checked_type().defined())
           << "Type inference is required to run the context analysis passes.";
       if (arg->checked_type()->IsInstance<FuncTypeNode>()) {
         auto it = closures_.find(arg);
         if (it != closures_.end()) {
           closures_[param] = it->second;
         } else {
-          CHECK(arg->IsInstance<GlobalVarNode>());
+          ICHECK(arg->IsInstance<GlobalVarNode>());
           closures_[param] = Downcast<GlobalVar>(arg);
         }
       }
@@ -631,9 +632,9 @@ class ContextAnalyzer : public MixedModeVisitor {
     // Unify the corresponding arguement and parameter.
     auto device = DeviceFor(GetRef<Call>(call));
     auto it = closures_.find(call->op);
-    CHECK(it != closures_.end()) << "Cannot find var: " << call->op;
+    ICHECK(it != closures_.end()) << "Cannot find var: " << call->op;
     auto glb_var = it->second;
-    CHECK(mod_.defined()) << "Cannot analyze context on a globalvar without module";
+    ICHECK(mod_.defined()) << "Cannot analyze context on a globalvar without module";
     Function func = Downcast<Function>(mod_->Lookup(glb_var));
     // Unify the underlying function for clousre or currying functions.
     while (IsClosure(func) || IsCurrying(func)) {
@@ -648,7 +649,7 @@ class ContextAnalyzer : public MixedModeVisitor {
       }
     }
 
-    CHECK_EQ(call->args.size(), func->params.size());
+    ICHECK_EQ(call->args.size(), func->params.size());
     for (size_t i = 0; i < call->args.size(); i++) {
       Unify(DeviceFor(call->args[i]), DeviceFor(func->params[i]));
       MixedModeVisitor::VisitExpr(call->args[i]);
@@ -668,13 +669,13 @@ class ContextAnalyzer : public MixedModeVisitor {
 
  private:
   /* \brief The cpu context. */
-  TVMContext cpu_ctx_;
+  Device cpu_dev_;
   /* \brief The module that helps context analysis. */
   const IRModule& mod_;
   /* \brief The current function that is being analyzed. */
   GlobalVar current_func_;
   /* \brief The default device that could be attached to an expression. */
-  const TVMContext& default_context_;
+  const Device& default_device_;
   /* \brief The IR node to device domain mapping. */
   std::unordered_map<Expr, DeviceDomainPtr, runtime::ObjectPtrHash, runtime::ObjectPtrEqual>
       expr_to_device_;
@@ -690,21 +691,20 @@ class ContextAnalyzer : public MixedModeVisitor {
 
 }  // namespace analysis
 
-AnalysisResultMap ContextAnalysis(const IRModule& mod, const TVMContext& default_context) {
+AnalysisResultMap ContextAnalysis(const IRModule& mod, const Device& default_device) {
   // TODO(@zhiics) Apply the pass to all functions/entries
   auto entry = mod->GetGlobalVar("main");
-  auto ca = analysis::ContextAnalyzer(mod, entry, default_context);
+  auto ca = analysis::ContextAnalyzer(mod, entry, default_device);
   auto expr = mod->Lookup(entry);
   ca.VisitExpr(expr);
   return ca.Results();
 }
 
-// Unpack the device type and deivce id fields in TVMContext for PackedFunc calls
-// as TVMContext is not in the object system.
-PackedAnalysisResultMap ContextAnalysisPacked(const IRModule& mod,
-                                              const TVMContext& default_context) {
+// Unpack the device type and deivce id fields in Device for PackedFunc calls
+// as Device is not in the object system.
+PackedAnalysisResultMap ContextAnalysisPacked(const IRModule& mod, const Device& default_device) {
   PackedAnalysisResultMap ret;
-  auto res = ContextAnalysis(mod, default_context);
+  auto res = ContextAnalysis(mod, default_device);
   for (const auto& it : res) {
     Integer dev_ty = static_cast<int>(it.second.device_type);
     Integer dev_id = it.second.device_id;

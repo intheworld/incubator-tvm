@@ -112,14 +112,14 @@ int main(int argc, char** argv) {
   gettimeofday(&t1, 0);
 
   float input_storage[1 * 3 * 224 * 224];
-  FILE* fp = fopen(argv[3], "rb");
+  FILE* fp = fopen(argv[4], "rb");
   fread(input_storage, 3 * 224 * 224, 4, fp);
   fclose(fp);
 
   std::vector<int64_t> input_shape = {1, 3, 224, 224};
   DLTensor input;
   input.data = input_storage;
-  input.ctx = DLContext{kDLCPU, 0};
+  input.device = DLDevice{kDLCPU, 0};
   input.ndim = 4;
   input.dtype = DLDataType{kDLFloat, 32, 1};
   input.shape = input_shape.data();
@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
   std::vector<int64_t> output_shape = {1, 1000};
   DLTensor output;
   output.data = output_storage;
-  output.ctx = DLContext{kDLCPU, 0};
+  output.device = DLDevice{kDLCPU, 0};
   output.ndim = 2;
   output.dtype = DLDataType{kDLFloat, 32, 1};
   output.shape = output_shape.data();

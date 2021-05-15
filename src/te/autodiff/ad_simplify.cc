@@ -56,7 +56,7 @@
 #include <memory>
 #include <utility>
 
-#include "ad_util.h"
+#include "ad_utils.h"
 
 namespace tvm {
 namespace te {
@@ -97,8 +97,8 @@ Array<IterVar> IterVarsFromMap(const Array<Var>& vars, const Map<Var, Range>& vr
                                IterVarType iter_type = kDataPar, std::string thread_tag = "") {
   Array<IterVar> res;
   for (const Var& v : vars) {
-    CHECK(vranges.count(v)) << "A range for the variable " << v << " was not provided in map "
-                            << vranges;
+    ICHECK(vranges.count(v)) << "A range for the variable " << v << " was not provided in map "
+                             << vranges;
     res.push_back(IterVar(vranges[v], v, iter_type, thread_tag));
   }
   return res;
@@ -413,15 +413,17 @@ class FactorOutAtomicFormulasFunctor
     auto res_b = VisitExpr(op->b);
 
     // For the And case we return the union of the sets of atomic formulas
-    std::unordered_set<PrimExpr, StructuralHash, StructuralEqual> res_set;
-    res_set.reserve(res_a.atomic_formulas.size() + res_b.atomic_formulas.size());
+    std::unordered_set<PrimExpr, StructuralHash, StructuralEqual> res_a_set;
+    res_a_set.reserve(res_a.atomic_formulas.size());
     std::copy(res_a.atomic_formulas.begin(), res_a.atomic_formulas.end(),
-              std::inserter(res_set, res_set.end()));
-    std::copy(res_b.atomic_formulas.begin(), res_b.atomic_formulas.end(),
-              std::inserter(res_set, res_set.end()));
+              std::inserter(res_a_set, res_a_set.end()));
 
-    std::vector<PrimExpr> res{res_set.begin(), res_set.end()};
-
+    std::vector<PrimExpr> res = res_a.atomic_formulas;
+    for (const auto& e : res_b.atomic_formulas) {
+      if (res_a_set.find(e) == res_a_set.end()) {
+        res.emplace_back(e);
+      }
+    }
     // And the residuals are combined with &&
     return {res, res_a.rest && res_b.rest};
   }
@@ -443,10 +445,13 @@ class FactorOutAtomicFormulasFunctor
 
     // For the Or case we intersect the sets of atomic formulas
     std::unordered_set<PrimExpr, StructuralHash, StructuralEqual> res_set;
+    std::vector<PrimExpr> res;
     res_set.reserve(std::min(res_a.atomic_formulas.size(), res_b.atomic_formulas.size()));
-    for (const auto& res_b_formula : res_b_set) {
+    res.reserve(std::min(res_a.atomic_formulas.size(), res_b.atomic_formulas.size()));
+    for (const auto& res_b_formula : res_b.atomic_formulas) {
       if (res_a_set.count(res_b_formula)) {
         res_set.insert(res_b_formula);
+        res.push_back(res_b_formula);
       }
     }
 
@@ -454,13 +459,13 @@ class FactorOutAtomicFormulasFunctor
     // which are left behind, and then combine them with the residuals into the new residual.
     std::vector<PrimExpr> new_cond_a;
     new_cond_a.reserve(res_a.atomic_formulas.size() - res_set.size());
-    for (const auto& formula : res_a_set) {
+    for (const auto& formula : res_a.atomic_formulas) {
       if (!res_set.count(formula)) new_cond_a.emplace_back(formula);
     }
 
     std::vector<PrimExpr> new_cond_b;
     new_cond_b.reserve(res_b.atomic_formulas.size() - res_set.size());
-    for (const auto& formula : res_b_set) {
+    for (const auto& formula : res_b.atomic_formulas) {
       if (!res_set.count(formula)) new_cond_b.emplace_back(formula);
     }
 
@@ -468,7 +473,6 @@ class FactorOutAtomicFormulasFunctor
     res_b.atomic_formulas = std::move(new_cond_b);
 
     PrimExpr new_rest = res_a.to_expr() || res_b.to_expr();
-    std::vector<PrimExpr> res{res_set.begin(), res_set.end()};
 
     return {res, new_rest};
   }
@@ -478,7 +482,7 @@ class FactorOutAtomicFormulasFunctor
 // and a non-atomic residual. Atomic formulas are consts, calls, variables and comparisons (a <= b,
 // etc), i.e. formulas which are not logical operators (||, &&, !) on the top level.
 FactorOutAtomicFormulasResult FactorOutAtomicFormulas(const PrimExpr& e) {
-  CHECK(e.dtype().is_bool());
+  ICHECK(e.dtype().is_bool());
   return FactorOutAtomicFormulasFunctor().VisitExpr(e);
 }
 
@@ -494,7 +498,7 @@ inline PrimExpr ModImpl(PrimExpr a, PrimExpr b, DivMode mode) {
   if (mode == kTruncDiv) {
     return truncmod(a, b);
   } else {
-    CHECK_EQ(mode, kFloorDiv);
+    ICHECK_EQ(mode, kFloorDiv);
     return floormod(a, b);
   }
 }
@@ -503,7 +507,7 @@ inline PrimExpr DivImpl(PrimExpr a, PrimExpr b, DivMode mode) {
   if (mode == kTruncDiv) {
     return truncdiv(a, b);
   } else {
-    CHECK_EQ(mode, kFloorDiv);
+    ICHECK_EQ(mode, kFloorDiv);
     return floordiv(a, b);
   }
 }
@@ -541,7 +545,7 @@ class EliminateDivModMutator : public ExprMutator {
       }
     }
 
-    return truncdiv(VisitExpr(op->a), VisitExpr(op->b));
+    return div(VisitExpr(op->a), VisitExpr(op->b));
   }
 
   virtual PrimExpr VisitExpr_(const ModNode* op) {
@@ -817,7 +821,7 @@ PrimExpr SimplifyReductionDomain(const PrimExpr& expr, const Map<Var, Range>& ou
 // Extract from cond an implication of cond not containing vars
 std::pair<PrimExpr, PrimExpr> ImplicationNotContainingVars(
     const PrimExpr& cond, const std::unordered_set<const VarNode*>& vars) {
-  CHECK(cond.dtype().is_bool()) << "The type of cond must be bool";
+  ICHECK(cond.dtype().is_bool()) << "The type of cond must be bool";
   // TODO(sgrechanik-h): NOTs could be pushed down using De Morgan laws
   // before running this function but this case didn't seem to be important enough.
   if (const AndNode* op = cond.as<AndNode>()) {
@@ -938,7 +942,7 @@ class RemoveRedundantInequalitiesMutator : public ExprMutator {
 
   virtual PrimExpr VisitExpr_(const ReduceNode* op) {
     Array<PrimExpr> known_with_axes = known_;
-    CHECK(op->init.empty()) << "Derivative of Reduction with initialization is not implemented";
+    ICHECK(op->init.empty()) << "Derivative of Reduction with initialization is not implemented";
     for (const PrimExpr& axis_cond : IterVarsToInequalities(op->axis)) {
       known_with_axes.push_back(axis_cond);
     }
@@ -1011,7 +1015,7 @@ PrimExpr TrySimplifyCompute(const PrimExpr& expr, const PrimExpr& cond,
   Array<Var> used_res_variables;
   for (const Var& var : res->dst->variables) {
     if (ExprUseVar(new_expr, var)) {
-      CHECK(res->dst->ranges.count(var)) << "Range of " << var << " cannot be inferred.";
+      ICHECK(res->dst->ranges.count(var)) << "Range of " << var << " cannot be inferred.";
       used_res_variables.push_back(var);
     }
   }
@@ -1031,7 +1035,7 @@ PrimExpr TrySimplifyCompute(const PrimExpr& expr, const PrimExpr& cond,
   // Compute volumes before and after
   PrimExpr old_volume = make_const(DataType::Int(64), 1);
   for (const Var& var : outer_axis) {
-    CHECK(vranges.count(var)) << "Range of " << var << " was not provided.";
+    ICHECK(vranges.count(var)) << "Range of " << var << " was not provided.";
     old_volume = old_volume * vranges[var]->extent;
   }
 
@@ -1069,7 +1073,7 @@ class ReductionAsTensorAccessMutator : public ExprMutator {
     ReductionAsTensorAccessMutator new_mutator(Concat(IterVarsToVars(op->axis), outer_axis_),
                                                Merge(vranges_, IterVarsToMap(op->axis)), name_);
 
-    CHECK(op->init.empty()) << "Derivative of Reduction with initialization is not implemented";
+    ICHECK(op->init.empty()) << "Derivative of Reduction with initialization is not implemented";
     Array<PrimExpr> new_source;
     for (const PrimExpr& src : op->source) {
       new_source.push_back(new_mutator(src));
@@ -1152,7 +1156,7 @@ PrimExpr RemoveJacobianAndLiftNonzeroCondImpl(const PrimExpr& expr_orig, const A
   PrimExpr expr = analyzer.Simplify(expr_orig, kSimplifyRewriteCanonicalRewrite);
 
   if (const ReduceNode* red = expr.as<ReduceNode>()) {
-    CHECK(red->init.empty()) << "Derivative of Reduction with initialization is not implemented";
+    ICHECK(red->init.empty()) << "Derivative of Reduction with initialization is not implemented";
     // TODO(sgrechanik-h): There are some other operations which behave like sum
     bool is_sum = IsSumCombiner(red->combiner, vranges);
     if (is_sum || CanFactorZeroFromCombiner(red->combiner, red->value_index, vranges)) {
@@ -1172,8 +1176,10 @@ PrimExpr RemoveJacobianAndLiftNonzeroCondImpl(const PrimExpr& expr_orig, const A
 
       new_red = Reduce(red->combiner, source, red->axis, cond, red->value_index, red->init);
       new_red = SimplifyReductionDomain(new_red, combined_vranges);
+      // Update original red pointer for later use.
+      red = new_red.as<ReduceNode>();
       // If the reduction disappears completely then transform the result as a non-reduction
-      if (!new_red.as<ReduceNode>()) {
+      if (!red) {
         return RemoveJacobianAndLiftNonzeroCondImpl(new_red, axis, vranges);
       }
 

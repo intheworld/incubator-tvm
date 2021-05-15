@@ -2,13 +2,13 @@ cmake_minimum_required(VERSION 3.2)
 project(tvm C CXX)
 
 # Utility functions
-include(cmake/util/Util.cmake)
-include(cmake/util/FindCUDA.cmake)
-include(cmake/util/FindOpenCL.cmake)
-include(cmake/util/FindVulkan.cmake)
-include(cmake/util/FindLLVM.cmake)
-include(cmake/util/FindROCM.cmake)
-include(cmake/util/FindEthosN.cmake)
+include(cmake/utils/Utils.cmake)
+include(cmake/utils/FindCUDA.cmake)
+include(cmake/utils/FindOpenCL.cmake)
+include(cmake/utils/FindVulkan.cmake)
+include(cmake/utils/FindLLVM.cmake)
+include(cmake/utils/FindROCM.cmake)
+include(cmake/utils/FindEthosN.cmake)
 
 if(EXISTS ${CMAKE_CURRENT_BINARY_DIR}/config.cmake)
   include(${CMAKE_CURRENT_BINARY_DIR}/config.cmake)
@@ -34,8 +34,9 @@ tvm_option(USE_RPC "Build with RPC" ON)
 tvm_option(USE_THREADS "Build with thread support" ON)
 tvm_option(USE_LLVM "Build with LLVM, can be set to specific llvm-config path" OFF)
 tvm_option(USE_STACKVM_RUNTIME "Include stackvm into the runtime" OFF)
-tvm_option(USE_GRAPH_RUNTIME "Build with tiny graph runtime" ON)
-tvm_option(USE_GRAPH_RUNTIME_DEBUG "Build with tiny graph runtime debug mode" OFF)
+tvm_option(USE_GRAPH_EXECUTOR "Build with tiny graph executor" ON)
+tvm_option(USE_GRAPH_EXECUTOR_CUDA_GRAPH "Build with tiny graph executor with CUDA Graph for GPUs" OFF)
+tvm_option(USE_PROFILER "Build profiler for the VM and graph executor" ON)
 tvm_option(USE_OPENMP "Build with OpenMP thread pool implementation" OFF)
 tvm_option(USE_RELAY_DEBUG "Building Relay in debug mode..." OFF)
 tvm_option(USE_RTTI "Build with RTTI" ON)
@@ -47,6 +48,7 @@ tvm_option(USE_TF_TVMDSOOP "Build with TensorFlow TVMDSOOp" OFF)
 tvm_option(USE_FALLBACK_STL_MAP "Use TVM's POD compatible Map" OFF)
 tvm_option(USE_ETHOSN "Build with Arm Ethos-N" OFF)
 tvm_option(INDEX_DEFAULT_I64 "Defaults the index datatype to int64" ON)
+tvm_option(USE_LIBBACKTRACE "Build libbacktrace to supply linenumbers on stack traces" AUTO)
 
 # 3rdparty libraries
 tvm_option(DLPACK_PATH "Path to DLPACK" "3rdparty/dlpack/include")
@@ -56,6 +58,7 @@ tvm_option(COMPILER_RT_PATH "Path to COMPILER-RT" "3rdparty/compiler-rt")
 tvm_option(PICOJSON_PATH "Path to PicoJSON" "3rdparty/picojson")
 
 # Contrib library options
+tvm_option(USE_BYODT_POSIT "Build with BYODT software emulated posit custom datatype" OFF)
 tvm_option(USE_BLAS "The blas library to be linked" none)
 tvm_option(USE_MKL "MKL root path when use MKL blas" OFF)
 tvm_option(USE_MKLDNN "Build with MKLDNN" OFF)
@@ -65,17 +68,22 @@ tvm_option(USE_CUBLAS "Build with cuBLAS" OFF)
 tvm_option(USE_THRUST "Build with Thrust" OFF)
 tvm_option(USE_MIOPEN "Build with ROCM:MIOpen" OFF)
 tvm_option(USE_ROCBLAS "Build with ROCM:RoCBLAS" OFF)
-tvm_option(USE_SORT "Build with sort support" OFF)
+tvm_option(USE_SORT "Build with sort support" ON)
 tvm_option(USE_NNPACK "Build with nnpack support" OFF)
-tvm_option(USE_RANDOM "Build with random support" OFF)
+tvm_option(USE_RANDOM "Build with random support" ON)
 tvm_option(USE_MICRO_STANDALONE_RUNTIME "Build with micro.standalone_runtime support" OFF)
 tvm_option(USE_CPP_RPC "Build CPP RPC" OFF)
 tvm_option(USE_TFLITE "Build with tflite support" OFF)
 tvm_option(USE_TENSORFLOW_PATH "TensorFlow root path when use TFLite" none)
 tvm_option(USE_COREML "Build with coreml support" OFF)
+tvm_option(USE_BNNS "Build with BNNS support" OFF)
 tvm_option(USE_TARGET_ONNX "Build with ONNX Codegen support" OFF)
 tvm_option(USE_ARM_COMPUTE_LIB "Build with Arm Compute Library" OFF)
-tvm_option(USE_ARM_COMPUTE_LIB_GRAPH_RUNTIME "Build with Arm Compute Library graph runtime" OFF)
+tvm_option(USE_ARM_COMPUTE_LIB_GRAPH_EXECUTOR "Build with Arm Compute Library graph executor" OFF)
+tvm_option(USE_TENSORRT_CODEGEN "Build with TensorRT Codegen support" OFF)
+tvm_option(USE_TENSORRT_RUNTIME "Build with TensorRT runtime" OFF)
+tvm_option(USE_RUST_EXT "Build with Rust based compiler extensions, STATIC, DYNAMIC, or OFF" OFF)
+tvm_option(USE_VITIS_AI "Build with VITIS-AI Codegen support" OFF)
 
 # include directories
 include_directories(${CMAKE_INCLUDE_PATH})
@@ -96,6 +104,9 @@ if(MSVC)
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
   add_definitions(-D_SCL_SECURE_NO_WARNINGS)
   add_definitions(-D_ENABLE_EXTENDED_ALIGNED_STORAGE)
+  add_definitions(-DNOMINMAX)
+  # regeneration does not work well with msbuild custom rules.
+  set(CMAKE_SUPPRESS_REGENERATION ON)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /bigobj")
@@ -122,6 +133,14 @@ if(MSVC)
   add_compile_options(/wd4180)
   # DLL interface warning in c++
   add_compile_options(/wd4251)
+  # destructor was implicitly defined as deleted
+  add_compile_options(/wd4624)
+  # unary minus operator applied to unsigned type, result still unsigned
+  add_compile_options(/wd4146)
+  # 'inline': used more than once
+  add_compile_options(/wd4141)
+  # unknown pragma
+  add_compile_options(/wd4068)
 else(MSVC)
   set(WARNING_FLAG -Wall)
   if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
@@ -143,7 +162,6 @@ else(MSVC)
       CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.0)
     set(CMAKE_CXX_FLAGS "-faligned-new ${CMAKE_CXX_FLAGS}")
   endif()
-  include(cmake/modules/ClangFlags.cmake)
 
   # Detect if we're compiling for Hexagon.
   set(TEST_FOR_HEXAGON_CXX
@@ -248,15 +266,9 @@ list(APPEND COMPILER_SRCS ${RELAY_BACKEND_SRCS})
 list(APPEND COMPILER_SRCS ${RELAY_IR_SRCS})
 list(APPEND COMPILER_SRCS ${RELAY_QNN_SRCS})
 
-
-if(USE_VM_PROFILER)
-  message(STATUS "Build compiler with Relay VM profiler support...")
-  file(GLOB BACKEND_VM_PROFILER_SRCS src/relay/backend/vm/profiler/*.cc)
-  list(APPEND COMPILER_SRCS ${BACKEND_VM_PROFILER_SRCS})
-endif(USE_VM_PROFILER)
-
 file(GLOB DATATYPE_SRCS src/target/datatype/*.cc)
 list(APPEND COMPILER_SRCS ${DATATYPE_SRCS})
+list(APPEND COMPILER_SRCS "src/target/datatype/myfloat/myfloat.cc")
 
 file(GLOB RUNTIME_SRCS
   src/runtime/*.cc
@@ -279,8 +291,6 @@ if (INDEX_DEFAULT_I64)
   add_definitions(-DTVM_INDEX_DEFAULT_I64=1)
 endif()
 
-list(APPEND RUNTIME_SRCS 3rdparty/bfloat16/bfloat16.cc)
-
 if(USE_RPC)
   message(STATUS "Build with RPC support...")
   file(GLOB RUNTIME_RPC_SRCS src/runtime/rpc/*.cc)
@@ -297,25 +307,48 @@ else()
   list(APPEND COMPILER_SRCS ${STACKVM_RUNTIME_SRCS})
 endif(USE_STACKVM_RUNTIME)
 
-if(USE_GRAPH_RUNTIME)
-  message(STATUS "Build with Graph runtime support...")
-  file(GLOB RUNTIME_GRAPH_SRCS src/runtime/graph/*.cc)
-  list(APPEND RUNTIME_SRCS ${RUNTIME_GRAPH_SRCS})
+# NOTE(areusch): USE_GRAPH_RUNTIME will be deleted in a future release
+if(USE_GRAPH_RUNTIME AND NOT DEFINED USE_GRAPH_EXECUTOR)
+  message(WARNING "USE_GRAPH_RUNTIME renamed to USE_GRAPH_EXECUTOR. Please update your config.cmake")
+  set(USE_GRAPH_EXECUTOR ${USE_GRAPH_RUNTIME})
+  unset(USE_GRAPH_RUNTIME CACHE)
+endif(USE_GRAPH_RUNTIME AND NOT DEFINED USE_GRAPH_EXECUTOR)
 
-  if(USE_GRAPH_RUNTIME_DEBUG)
-    message(STATUS "Build with Graph runtime debug support...")
-    file(GLOB RUNTIME_GRAPH_DEBUG_SRCS src/runtime/graph/debug/*.cc)
-    list(APPEND RUNTIME_SRCS ${RUNTIME_GRAPH_DEBUG_SRCS})
-    set_source_files_properties(${RUNTIME_GRAPH_SRCS}
-      PROPERTIES COMPILE_DEFINITIONS "TVM_GRAPH_RUNTIME_DEBUG")
-  endif(USE_GRAPH_RUNTIME_DEBUG)
-endif(USE_GRAPH_RUNTIME)
+# NOTE(areusch): USE_GRAPH_RUNTIME_DEBUG will be deleted in a future release
+if(USE_GRAPH_RUNTIME_DEBUG AND NOT DEFINED USE_GRAPH_EXECUTOR_DEBUG)
+  message(WARNING "USE_GRAPH_RUNTIME_DEBUG renamed to USE_GRAPH_EXECUTOR_DEBUG. Please update your config.cmake")
+  set(USE_GRAPH_EXECUTOR_DEBUG ${USE_GRAPH_RUNTIME_DEBUG})
+  unset(USE_GRAPH_RUNTIME_DEBUG CACHE)
+endif(USE_GRAPH_RUNTIME_DEBUG AND NOT DEFINED USE_GRAPH_EXECUTOR_DEBUG)
 
+if(USE_GRAPH_EXECUTOR)
+  message(STATUS "Build with Graph Executor support...")
+  file(GLOB RUNTIME_GRAPH_EXECUTOR_SRCS src/runtime/graph_executor/*.cc)
+  list(APPEND RUNTIME_SRCS ${RUNTIME_GRAPH_EXECUTOR_SRCS})
+
+endif(USE_GRAPH_EXECUTOR)
+
+# convert old options for profiler
+if(USE_GRAPH_EXECUTOR_DEBUG)
+  unset(USE_GRAPH_EXECUTOR_DEBUG CACHE)
+  set(USE_PROFILER ON)
+endif()
 if(USE_VM_PROFILER)
-  message(STATUS "Build with Relay VM profiler support...")
+  unset(USE_VM_PROFILER CACHE)
+  set(USE_PROFILER ON)
+endif()
+
+if(USE_PROFILER)
+  message(STATUS "Build with profiler...")
+
+  file(GLOB RUNTIME_GRAPH_EXECUTOR_DEBUG_SRCS src/runtime/graph_executor/debug/*.cc)
+  list(APPEND RUNTIME_SRCS ${RUNTIME_GRAPH_EXECUTOR_DEBUG_SRCS})
+  set_source_files_properties(${RUNTIME_GRAPH_EXECUTOR_SRCS}
+    PROPERTIES COMPILE_DEFINITIONS "TVM_GRAPH_EXECUTOR_DEBUG")
+
   file(GLOB RUNTIME_VM_PROFILER_SRCS src/runtime/vm/profiler/*.cc)
   list(APPEND RUNTIME_SRCS ${RUNTIME_VM_PROFILER_SRCS})
-endif(USE_VM_PROFILER)
+endif(USE_PROFILER)
 
 # Module rules
 include(cmake/modules/VTA.cmake)
@@ -334,6 +367,7 @@ include(cmake/modules/contrib/BLAS.cmake)
 include(cmake/modules/contrib/CODEGENC.cmake)
 include(cmake/modules/contrib/DNNL.cmake)
 include(cmake/modules/contrib/Random.cmake)
+include(cmake/modules/contrib/Posit.cmake)
 include(cmake/modules/contrib/MicroStandaloneRuntime.cmake)
 include(cmake/modules/contrib/Sort.cmake)
 include(cmake/modules/contrib/NNPack.cmake)
@@ -341,10 +375,15 @@ include(cmake/modules/contrib/HybridDump.cmake)
 include(cmake/modules/contrib/TFLite.cmake)
 include(cmake/modules/contrib/TF_TVMDSOOP.cmake)
 include(cmake/modules/contrib/CoreML.cmake)
+include(cmake/modules/contrib/BNNS.cmake)
 include(cmake/modules/contrib/ONNX.cmake)
 include(cmake/modules/contrib/ArmComputeLib.cmake)
+include(cmake/modules/contrib/TensorRT.cmake)
+include(cmake/modules/contrib/VitisAI.cmake)
+include(cmake/modules/contrib/Verilator.cmake)
 include(cmake/modules/Git.cmake)
 include(cmake/modules/LibInfo.cmake)
+include(cmake/modules/RustExt.cmake)
 
 include(CheckCXXCompilerFlag)
 if(NOT MSVC)
@@ -359,13 +398,20 @@ endif()
 
 add_lib_info(${CMAKE_CURRENT_LIST_DIR}/src/support/libinfo.cc)
 
-add_library(tvm_objs OBJECT ${COMPILER_SRCS} ${RUNTIME_SRCS})
+add_library(tvm_objs OBJECT ${COMPILER_SRCS})
 add_library(tvm_runtime_objs OBJECT ${RUNTIME_SRCS})
 
-add_library(tvm SHARED $<TARGET_OBJECTS:tvm_objs>)
-set_property(TARGET tvm APPEND PROPERTY LINK_OPTIONS "${TVM_VISIBILITY_FLAGS}")
+add_library(tvm SHARED $<TARGET_OBJECTS:tvm_objs> $<TARGET_OBJECTS:tvm_runtime_objs>)
+set_property(TARGET tvm APPEND PROPERTY LINK_OPTIONS "${TVM_VISIBILITY_FLAG}")
 add_library(tvm_runtime SHARED $<TARGET_OBJECTS:tvm_runtime_objs>)
-set_property(TARGET tvm_runtime APPEND PROPERTY LINK_OPTIONS "${TVM_VISIBILITY_FLAGS}")
+set_property(TARGET tvm_runtime APPEND PROPERTY LINK_OPTIONS "${TVM_VISIBILITY_FLAG}")
+target_compile_definitions(tvm_objs PUBLIC DMLC_USE_LOGGING_LIBRARY=<tvm/runtime/logging.h>)
+target_compile_definitions(tvm_runtime_objs PUBLIC DMLC_USE_LOGGING_LIBRARY=<tvm/runtime/logging.h>)
+target_compile_definitions(tvm PUBLIC DMLC_USE_LOGGING_LIBRARY=<tvm/runtime/logging.h>)
+target_compile_definitions(tvm_runtime PUBLIC DMLC_USE_LOGGING_LIBRARY=<tvm/runtime/logging.h>)
+
+# logging option for libbacktrace
+include(cmake/modules/Logging.cmake)
 
 if(USE_MICRO)
   # NOTE: cmake doesn't track dependencies at the file level across subdirectories. For the
@@ -380,30 +426,29 @@ endif()
 
 if(USE_RELAY_DEBUG)
   message(STATUS "Building Relay in debug mode...")
-  set_target_properties(tvm_objs PROPERTIES COMPILE_DEFINITIONS "USE_RELAY_DEBUG")
-  set_target_properties(tvm_objs PROPERTIES COMPILE_DEFINITIONS "DMLC_LOG_DEBUG")
+  target_compile_definitions(tvm_objs PRIVATE "USE_RELAY_DEBUG")
+  target_compile_definitions(tvm_objs PRIVATE "TVM_LOG_DEBUG")
+  target_compile_definitions(tvm_runtime_objs PRIVATE "USE_RELAY_DEBUG")
+  target_compile_definitions(tvm_runtime_objs PRIVATE "TVM_LOG_DEBUG")
 else()
-  set_target_properties(tvm_objs PROPERTIES COMPILE_DEFINITIONS "NDEBUG")
+  target_compile_definitions(tvm_objs PRIVATE "NDEBUG")
+  target_compile_definitions(tvm_runtime_objs PRIVATE "NDEBUG")
 endif(USE_RELAY_DEBUG)
 
 if(USE_FALLBACK_STL_MAP)
   message(STATUS "Building with STL Map...")
-  set_target_properties(tvm_objs PROPERTIES COMPILE_DEFINITIONS "USE_FALLBACK_STL_MAP=1")
+  target_compile_definitions(tvm_objs PRIVATE "USE_FALLBACK_STL_MAP=1")
+  target_compile_definitions(tvm_runtime_objs PRIVATE "USE_FALLBACK_STL_MAP=1")
 else()
   message(STATUS "Building with TVM Map...")
-  set_target_properties(tvm_objs PROPERTIES COMPILE_DEFINITIONS "USE_FALLBACK_STL_MAP=0")
+  target_compile_definitions(tvm_objs PRIVATE "USE_FALLBACK_STL_MAP=0")
+  target_compile_definitions(tvm_runtime_objs PRIVATE "USE_FALLBACK_STL_MAP=0")
 endif(USE_FALLBACK_STL_MAP)
 
 if(BUILD_FOR_HEXAGON)
   # Wrap pthread_create to allow setting custom stack size.
-  set_target_properties(tvm_runtime PROPERTIES LINK_FLAGS
+  set_property(TARGET tvm_runtime APPEND PROPERTY LINK_FLAGS
                         "-Wl,--wrap=pthread_create")
-
-  target_include_directories(tvm_runtime SYSTEM
-    PUBLIC "${USE_HEXAGON_SDK}/libs/common/qurt/ADSPv62MP/include/posix"
-    PUBLIC "${USE_HEXAGON_SDK}/libs/common/qurt/ADSPv62MP/include/qurt"
-    PUBLIC "${USE_HEXAGON_SDK}/incs"
-    PUBLIC "${USE_HEXAGON_SDK}/incs/stddef")
 endif()
 
 if(USE_THREADS AND NOT BUILD_FOR_HEXAGON)
@@ -417,6 +462,9 @@ endif()
 
 target_link_libraries(tvm PRIVATE ${TVM_LINKER_LIBS} ${TVM_RUNTIME_LINKER_LIBS})
 target_link_libraries(tvm_runtime PRIVATE ${TVM_RUNTIME_LINKER_LIBS})
+
+# Set flags for clang
+include(cmake/modules/ClangFlags.cmake)
 
 # Related headers
 target_include_directories(
@@ -435,7 +483,7 @@ target_include_directorieS(
 
 set(TVM_TEST_LIBRARY_NAME tvm)
 if (HIDE_PRIVATE_SYMBOLS AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-  add_library(tvm_allvisible SHARED $<TARGET_OBJECTS:tvm_objs>)
+  add_library(tvm_allvisible SHARED $<TARGET_OBJECTS:tvm_objs> $<TARGET_OBJECTS:tvm_runtime_objs>)
   target_include_directories(tvm_allvisible PUBLIC "$<TARGET_PROPERTY:tvm,INCLUDE_DIRECTORIES>")
   target_link_libraries(tvm_allvisible PRIVATE "$<TARGET_PROPERTY:tvm,LINK_LIBRARIES>")
   set(TVM_TEST_LIBRARY_NAME tvm_allvisible)
@@ -446,6 +494,7 @@ if (HIDE_PRIVATE_SYMBOLS AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   # once minimum CMake version is bumped up to 3.13 or above.
   target_link_libraries(tvm PRIVATE ${HIDE_SYMBOLS_LINKER_FLAGS})
   target_link_libraries(tvm_runtime PRIVATE ${HIDE_SYMBOLS_LINKER_FLAGS})
+  target_compile_definitions(tvm_allvisible PUBLIC DMLC_USE_LOGGING_LIBRARY=<tvm/runtime/logging.h>)
 endif()
 
 # Tests
@@ -463,7 +512,7 @@ if(GTEST_INCLUDE_DIR AND GTEST_LIB)
     add_executable(${__execname} ${__srcpath})
     list(APPEND TEST_EXECS ${__execname})
     target_include_directories(${__execname} SYSTEM PUBLIC ${GTEST_INCLUDE_DIR})
-    target_link_libraries(${__execname} ${TVM_TEST_LIBRARY_NAME} ${GTEST_LIB} pthread dl)
+    target_link_libraries(${__execname} PRIVATE ${TVM_TEST_LIBRARY_NAME} ${GTEST_LIB} pthread dl)
     set_target_properties(${__execname} PROPERTIES EXCLUDE_FROM_ALL 1)
     set_target_properties(${__execname} PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD 1)
   endforeach()
@@ -513,4 +562,34 @@ endif(INSTALL_DEV)
 if(MSVC)
   target_compile_definitions(tvm_objs PRIVATE -DTVM_EXPORTS)
   target_compile_definitions(tvm_runtime_objs PRIVATE -DTVM_EXPORTS)
+endif()
+
+set(TVM_IS_DEBUG_BUILD OFF)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR CMAKE_CXX_FLAGS MATCHES "-g")
+  set(TVM_IS_DEBUG_BUILD ON)
+endif()
+
+# Change relative paths in backtrace to absolute ones
+if(TVM_IS_DEBUG_BUILD)
+  set(FILE_PREFIX_MAP_FLAG "-ffile-prefix-map=..=${CMAKE_CURRENT_SOURCE_DIR}")
+  target_compile_options(tvm PRIVATE "${FILE_PREFIX_MAP_FLAG}")
+  CHECK_CXX_COMPILER_FLAG("${FILE_PREFIX_MAP_FLAG}" FILE_PREFIX_MAP_SUPPORTED)
+  if(FILE_PREFIX_MAP_SUPPORTED)
+    target_compile_options(tvm PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${FILE_PREFIX_MAP_FLAG}>)
+    target_compile_options(tvm_objs PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${FILE_PREFIX_MAP_FLAG}>)
+    target_compile_options(tvm_runtime PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${FILE_PREFIX_MAP_FLAG}>)
+    target_compile_options(tvm_runtime_objs PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${FILE_PREFIX_MAP_FLAG}>)
+  endif()
+endif()
+
+# Run dsymutil to generate debugging symbols for backtraces
+if(APPLE AND TVM_IS_DEBUG_BUILD)
+  find_program(DSYMUTIL dsymutil)
+  mark_as_advanced(DSYMUTIL)
+  add_custom_command(TARGET tvm
+      POST_BUILD
+      COMMAND ${DSYMUTIL} ARGS $<TARGET_FILE:tvm>
+      COMMENT "Running dsymutil"
+      VERBATIM
+		  )
 endif()

@@ -27,8 +27,8 @@ from test_dynamic_op_level3 import verify_func
 import tvm.topi.testing
 from tvm.relay.testing import run_infer_type
 
-# TODO(mbrookhart): Enable when VM supports heterogenus execution
-# @tvm.testing.uses_gpu
+
+@tvm.testing.uses_gpu
 def test_dyn_upsampling_run():
     def verify_upsampling(dshape, scale_h, scale_w, layout, method, align_corners=False):
 
@@ -56,10 +56,10 @@ def test_dyn_upsampling_run():
         zz = run_infer_type(z)
         func = relay.Function([x, scale_h_var, scale_w_var], z)
 
-        for target, ctx in tvm.testing.enabled_targets():
+        for target, dev in tvm.testing.enabled_targets():
             for kind in ["vm", "debug"]:
                 mod = tvm.ir.IRModule.from_expr(func)
-                intrp = relay.create_executor(kind, mod=mod, ctx=ctx, target=target)
+                intrp = relay.create_executor(kind, mod=mod, device=dev, target=target)
                 op_res = intrp.evaluate()(
                     x_data, np.array(scale_h).astype("float32"), np.array(scale_w).astype("float32")
                 )
@@ -72,8 +72,7 @@ def test_dyn_upsampling_run():
 
 
 # tests upsampling type inference with scale_h passed in as a constant and scale_w as a variable
-# TODO(mbrookhart): Enable when VM supports heterogenus execution
-# @tvm.testing.uses_gpu
+@tvm.testing.uses_gpu
 def test_dyn_upsampling_infer_type_const():
     n, c, h, w = te.size_var("n"), te.size_var("c"), te.size_var("h"), te.size_var("w")
 
@@ -85,8 +84,7 @@ def test_dyn_upsampling_infer_type_const():
     assert zz.checked_type == relay.TensorType((n, c, relay.Any(), relay.Any()), "int8")
 
 
-# TODO(mbrookhart): Enable when VM supports heterogenus execution
-# @tvm.testing.uses_gpu
+@tvm.testing.uses_gpu
 def test_dyn_upsampling3d_run():
     def verify_upsampling3d(
         dshape, scale_d, scale_h, scale_w, layout, method, coord_trans="half_pixel"
@@ -127,10 +125,10 @@ def test_dyn_upsampling3d_run():
         zz = run_infer_type(z)
         func = relay.Function([x, scale_d_var, scale_h_var, scale_w_var], z)
 
-        for target, ctx in enabled_targets():
+        for target, dev in enabled_targets():
             for kind in ["vm", "debug"]:
                 mod = tvm.ir.IRModule.from_expr(func)
-                intrp = relay.create_executor(kind, mod=mod, ctx=ctx, target=target)
+                intrp = relay.create_executor(kind, mod=mod, device=dev, target=target)
                 op_res = intrp.evaluate()(
                     x_data,
                     np.array(scale_d).astype("float32"),
@@ -167,8 +165,7 @@ def test_dyn_upsampling3d_infer_type_const():
     )
 
 
-# TODO(mbrookhart): Enable when VM supports heterogenus execution
-# @tvm.testing.uses_gpu
+@tvm.testing.uses_gpu
 def test_dyn_pad():
     def verify_pad(dshape, pad_width, pad_val, dtype):
         x = relay.var("x", relay.TensorType(dshape, dtype))

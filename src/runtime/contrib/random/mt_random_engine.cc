@@ -21,8 +21,8 @@
  * \file random/mt_random_engine.cc
  * \brief mt19937 random engine
  */
-#include <dmlc/logging.h>
 #include <tvm/runtime/device_api.h>
+#include <tvm/runtime/logging.h>
 #include <tvm/runtime/ndarray.h>
 
 #include <algorithm>
@@ -42,7 +42,7 @@ class RandomEngine {
   /*!
    * \brief Creates a RandomEngine using a default seed.
    */
-  RandomEngine() { this->Seed(time(0)); }
+  RandomEngine() { this->Seed(time(nullptr)); }
 
   /*!
    * \brief Creates a RandomEngine, suggesting the use of a provided seed.
@@ -71,8 +71,8 @@ class RandomEngine {
    * \brief Fills a tensor with values drawn from Unif(low, high)
    */
   void SampleUniform(DLTensor* data, float low, float high) {
-    CHECK_GT(high, low) << "high must be bigger than low";
-    CHECK(data->strides == nullptr);
+    ICHECK_GT(high, low) << "high must be bigger than low";
+    ICHECK(data->strides == nullptr);
 
     DLDataType dtype = data->dtype;
     int64_t size = 1;
@@ -80,9 +80,9 @@ class RandomEngine {
       size *= data->shape[i];
     }
 
-    CHECK(dtype.code == kDLFloat && dtype.bits == 32 && dtype.lanes == 1);
+    ICHECK(dtype.code == kDLFloat && dtype.bits == 32 && dtype.lanes == 1);
 
-    if (data->ctx.device_type == kDLCPU) {
+    if (data->device.device_type == kDLCPU) {
       std::uniform_real_distribution<float> uniform_dist(low, high);
       std::generate_n(static_cast<float*>(data->data), size,
                       [&]() { return uniform_dist(rnd_engine_); });
@@ -95,8 +95,8 @@ class RandomEngine {
    * \brief Fills a tensor with values drawn from Normal(loc, scale**2)
    */
   void SampleNormal(DLTensor* data, float loc, float scale) {
-    CHECK_GT(scale, 0) << "standard deviation must be positive";
-    CHECK(data->strides == nullptr);
+    ICHECK_GT(scale, 0) << "standard deviation must be positive";
+    ICHECK(data->strides == nullptr);
 
     DLDataType dtype = data->dtype;
     int64_t size = 1;
@@ -104,9 +104,9 @@ class RandomEngine {
       size *= data->shape[i];
     }
 
-    CHECK(dtype.code == kDLFloat && dtype.bits == 32 && dtype.lanes == 1);
+    ICHECK(dtype.code == kDLFloat && dtype.bits == 32 && dtype.lanes == 1);
 
-    if (data->ctx.device_type == kDLCPU) {
+    if (data->device.device_type == kDLCPU) {
       std::normal_distribution<float> normal_dist(loc, scale);
       std::generate_n(static_cast<float*>(data->data), size,
                       [&]() { return normal_dist(rnd_engine_); });
@@ -121,13 +121,14 @@ class RandomEngine {
       size *= data->shape[i];
     }
 
-    if (data->ctx.device_type == kDLCPU) {
+    if (data->device.device_type == kDLCPU) {
       FillData(data, size);
     } else {
       runtime::NDArray local = runtime::NDArray::Empty(
           std::vector<int64_t>{data->shape, data->shape + data->ndim}, data->dtype, {kDLCPU, 0});
-      FillData(&local.ToDLPack()->dl_tensor, size);
-      runtime::NDArray::CopyFromTo(&local.ToDLPack()->dl_tensor, data);
+      DLTensor* tensor = const_cast<DLTensor*>(local.operator->());
+      FillData(tensor, size);
+      runtime::NDArray::CopyFromTo(tensor, data);
     }
   }
 
@@ -139,6 +140,12 @@ class RandomEngine {
     // Use float representation could make us work well on float / int type too.
     if (tensor->dtype.bits == 1) {
       std::generate_n(static_cast<bool*>(tensor->data), size, [&]() { return dist(rnd_engine_); });
+    } else if (tensor->dtype.bits == 4) {
+      // For uint4/int4 we pack two values into a single byte.
+      // Thus, to ensure both values are non-zero, we use a distribution of 17 - 30.
+      std::uniform_real_distribution<> packed_dist(17.0, 30.0);
+      std::generate_n(reinterpret_cast<uint8_t*>(tensor->data), size,
+                      [&]() { return packed_dist(rnd_engine_); });
     } else if (tensor->dtype.bits == 8) {
       std::generate_n(static_cast<uint8_t*>(tensor->data), size,
                       [&]() { return dist(rnd_engine_); });

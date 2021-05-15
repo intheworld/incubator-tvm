@@ -27,11 +27,13 @@
 #include <tvm/relay/expr_functor.h>
 #include <tvm/relay/pattern_functor.h>
 
+#include <stack>
+
 namespace tvm {
 namespace relay {
 
 Expr DeDup(const Expr& e) {
-  class DeDupMutator : public TypeMutator, public ExprMutator, public PatternMutator {
+  class DeDupMutator : public TypeMutator, public MixedModeMutator, public PatternMutator {
    public:
     TypeVar Fresh(const TypeVar& tv) {
       TypeVar ret = TypeVar(tv->name_hint, tv->kind);
@@ -40,18 +42,20 @@ Expr DeDup(const Expr& e) {
     }
 
     Var Fresh(const Var& v) {
-      CHECK_EQ(rename_.count(v), 0);
-      CHECK_EQ(memo_.count(v), 0) << v.as<VarNode>();
+      ICHECK_EQ(rename_.count(v), 0);
+      ICHECK_EQ(memo_.count(v), 0) << v.as<VarNode>();
       Var ret = Var(v->name_hint(), VisitType(v->type_annotation));
       rename_[v] = ret;
       return ret;
     }
 
-    Expr VisitExpr(const Expr& e) final {
+    Expr DispatchVisitExpr(const Expr& e) final {
       auto ret = ExprMutator::VisitExpr(e);
       ret->checked_type_ = e->checked_type_;
       return ret;
     }
+
+    using MixedModeMutator::VisitExpr_;
 
     Expr VisitExpr_(const VarNode* op) final {
       Var v = GetRef<Var>(op);
@@ -59,8 +63,20 @@ Expr DeDup(const Expr& e) {
     }
 
     Expr VisitExpr_(const LetNode* op) final {
-      Var v = Fresh(op->var);
-      return Let(v, VisitExpr(op->value), VisitExpr(op->body));
+      std::unordered_map<Expr, Var, ObjectPtrHash, ObjectPtrEqual> new_vars;
+      auto pre_visit = [this, &new_vars](const LetNode* op) {
+        Expr expr = GetRef<Expr>(op);
+        new_vars[expr] = this->Fresh(op->var);
+        // Rely on the Memoizer to cache pre-visit values
+        this->VisitExpr(op->value);
+      };
+      auto post_visit = [this, &new_vars](const LetNode* op) {
+        Expr expr = GetRef<Expr>(op);
+        this->memo_[expr] =
+            Let(new_vars[expr], this->VisitExpr(op->value), this->VisitExpr(op->body));
+      };
+      ExpandANormalForm(op, pre_visit, post_visit);
+      return memo_[GetRef<Expr>(op)];
     }
 
     Type VisitType(const Type& t) final { return t.defined() ? TypeMutator::VisitType(t) : t; }
@@ -92,12 +108,12 @@ Expr DeDup(const Expr& e) {
     std::unordered_map<Var, Var, ObjectPtrHash, ObjectPtrEqual> rename_;
     std::unordered_map<TypeVar, TypeVar, ObjectPtrHash, ObjectPtrEqual> type_rename_;
   };
-  CHECK(WellFormed(e)) << AsText(e, false);
+  ICHECK(WellFormed(e)) << AsText(e, false);
   Expr ret = DeDupMutator().VisitExpr(e);
-  CHECK(WellFormed(ret));
-  CHECK_EQ(FreeVars(e).size(), FreeVars(ret).size());
+  ICHECK(WellFormed(ret));
+  ICHECK_EQ(FreeVars(e).size(), FreeVars(ret).size());
   return ret;
-}
+}  // namespace relay
 
 TVM_REGISTER_GLOBAL("relay._transform.dedup").set_body_typed(DeDup);
 

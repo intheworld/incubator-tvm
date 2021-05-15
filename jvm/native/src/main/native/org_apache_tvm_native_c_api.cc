@@ -243,7 +243,8 @@ extern "C" int funcInvokeCallback(TVMValue* args, int* typeCodes, int numArgs,
     TVMValue arg = args[i];
     int tcode = typeCodes[i];
     if (tcode == kTVMObjectHandle || tcode == kTVMPackedFuncHandle ||
-        tcode == kTVMObjectRValueRefArg || tcode == kTVMModuleHandle) {
+        tcode == kTVMObjectRValueRefArg || tcode == kTVMModuleHandle ||
+        tcode == kTVMNDArrayHandle) {
       TVMCbArgToReturn(&arg, &tcode);
     }
     jobject jarg = tvmRetValueToJava(env, arg, tcode);
@@ -452,7 +453,7 @@ JNIEXPORT jint JNICALL Java_org_apache_tvm_LibInfo_tvmArrayCopyToJArray(JNIEnv* 
   return ret;
 }
 
-// Context
+// Device
 JNIEXPORT jint JNICALL Java_org_apache_tvm_LibInfo_tvmSynchronize(JNIEnv* env, jint deviceType,
                                                                   jint deviceId) {
   return TVMSynchronize(static_cast<int>(deviceType), static_cast<int>(deviceId), NULL);

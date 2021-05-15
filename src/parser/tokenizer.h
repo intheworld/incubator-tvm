@@ -67,21 +67,22 @@ bool IsIdentLetter(char c) { return '_' == c || ('a' <= c && c <= 'z') || ('A' <
 bool IsIdent(char c) { return IsIdentLetter(c) || IsDigit(c); }
 
 static std::unordered_map<std::string, TokenType> KEYWORD_TABLE = {
-    {"let", TokenType::kLet},         {"fn", TokenType::kFn},
-    {"def", TokenType::kDefn},        {"if", TokenType::kIf},
-    {"else", TokenType::kElse},       {"type", TokenType::kTypeDef},
-    {"match", TokenType::kMatch},     {"extern", TokenType::kExtern},
-    {"free_var", TokenType::kFreeVar}};
+    {"let", TokenType::kLet},          {"fn", TokenType::kFn},
+    {"def", TokenType::kDefn},         {"if", TokenType::kIf},
+    {"else", TokenType::kElse},        {"type", TokenType::kTypeDef},
+    {"match", TokenType::kMatch},      {"extern", TokenType::kExtern},
+    {"free_var", TokenType::kFreeVar}, {"ref", TokenType::kRef},
+    {"ref_read", TokenType::kRefRead}, {"ref_write", TokenType::kRefWrite}};
 
 struct Tokenizer {
-  DiagnosticContext* diag_ctx;
+  DiagnosticContext diag_ctx;
   const SourceName& source_name;
 
   size_t pos;
   int col;
   int line;
   char next_char;
-  const std::string& source;
+  String source;
   std::vector<Token> tokens;
 
   char Next() {
@@ -99,7 +100,7 @@ struct Tokenizer {
   bool More() { return this->pos < this->source.size(); }
 
   char Peek() {
-    CHECK(pos < this->source.size());
+    ICHECK(pos < this->source.size());
     return this->source.at(this->pos);
   }
 
@@ -169,7 +170,7 @@ struct Tokenizer {
   }
 
   Token ParseNumber(bool is_pos, bool is_float, std::string number) {
-    CHECK(number.size() > 0) << "an empty string is an invalid number";
+    ICHECK(number.size() > 0) << "an empty string is an invalid number";
 
     try {
       if (is_float) {
@@ -187,15 +188,47 @@ struct Tokenizer {
     } catch (const std::invalid_argument& ia) {
       auto token = NewToken(TokenType::kFloat);
 
-      if (number.back() == 'f') {
-        number.pop_back();
+      auto suffix_pos = number.rfind("f");
+
+      auto literal_text = number.substr(0, suffix_pos);
+
+      auto suffix = number.substr(suffix_pos + 1, number.size() - suffix_pos);
+
+      int width = 32;
+
+      if (suffix.size()) {
+        try {
+          width = std::stoi(suffix);
+        } catch (const std::invalid_argument& err) {
+          this->diag_ctx.Emit(Diagnostic::Error(token->span)
+                              << "invalid numeric suffix `" << suffix << "`");
+        }
       }
 
-      double value = stod(number);
+      double value = stod(literal_text);
       value = is_pos ? value : -value;
-      token->data = tvm::FloatImm(DataType::Float(64), value);
+      token->data = tvm::FloatImm(DataType::Float(width), value);
       return token;
     }
+  }
+
+  Token ParseNumber(bool is_pos) {
+    std::stringstream ss;
+    while (More() && IsNumeric(Peek())) {
+      ss << Next();
+    }
+
+    bool is_float = false;
+
+    // Remove trailing floating point prefix.
+    if (More() && Peek() == 'f') {
+      ss << Next();
+      while (More() && IsNumeric(Peek())) {
+        ss << Next();
+      }
+      is_float = true;
+    }
+    return ParseNumber(is_pos, is_float, ss.str());
   }
 
   bool MatchString(const std::string& string) {
@@ -217,22 +250,22 @@ struct Tokenizer {
     int line = this->line;
     int column = this->col;
 
-    CHECK_EQ(Peek(), '[');
+    ICHECK_EQ(Peek(), '[');
     Next();
     std::stringstream type_key;
     while (More() && Peek() != ']') {
       type_key << Next();
     }
-    CHECK_EQ(Peek(), ']');
+    ICHECK_EQ(Peek(), ']');
     Next();
 
-    CHECK_EQ(Peek(), '[');
+    ICHECK_EQ(Peek(), '[');
     Next();
     std::stringstream str_index;
     while (More() && Peek() != ']') {
       str_index << Next();
     }
-    CHECK_EQ(Peek(), ']');
+    ICHECK_EQ(Peek(), ']');
     Next();
     // todo: add error handling around bad indices
     auto index = ParseNumber(true, false, str_index.str()).ToNumber();
@@ -252,7 +285,7 @@ struct Tokenizer {
         raw_attribute << Next();
       }
 
-      CHECK_EQ(Next(), ']');
+      ICHECK_EQ(Next(), ']');
 
       auto attribute = raw_attribute.str();
       // Clean up the white-space on both sides.
@@ -278,15 +311,15 @@ struct Tokenizer {
       } else {
         // TOOD(@jroesch): maybe make this a warning an continue parsing?
         auto span = SpanFrom(line, column);
-        this->diag_ctx->EmitFatal(Diagnostic::Error(span) << "unsupported attribute " << attribute);
+        this->diag_ctx.EmitFatal(Diagnostic::Error(span) << "unsupported attribute " << attribute);
         return Token();
       }
     } else {
       auto span = SpanFrom(line, column);
       this->diag_ctx
-          ->EmitFatal(Diagnostic::Error(span)
-                      << "`#` denotes the start of an attribute can only be followed by `[`"
-                      << " found `" << Peek() << "`");
+          .EmitFatal(Diagnostic::Error(span)
+                     << "`#` denotes the start of an attribute can only be followed by `[`"
+                     << " found `" << Peek() << "`");
       return Token();
     }
   }
@@ -307,14 +340,14 @@ struct Tokenizer {
         return token;
       } else {
         auto span = SpanFrom(line, col);
-        this->diag_ctx->EmitFatal(
+        this->diag_ctx.EmitFatal(
             Diagnostic::Error(span)
             << "\\r carriage returns must be followed by a \\n in the TVM text format");
         return Token();
       }
     } else if (next == '"') {
       // TODO(@jroesch): Properly tokenize escape sequences in strings.
-      // see https://github.com/apache/incubator-tvm/issues/6153.
+      // see https://github.com/apache/tvm/issues/6153.
       Next();
       std::stringstream string_content;
       while (More() && Peek() != '"') {
@@ -326,34 +359,28 @@ struct Tokenizer {
       auto token = NewToken(TokenType::kWhitespace);
       Next();
       return token;
-    } else if (IsDigit(next) || next == '-') {
+    } else if (next == '-') {
       int negs = 0;
       while (More() && Peek() == '-') {
         Next();
         negs++;
       }
-      // If there isn't a number right after either,
-      // this is really slow for lexing, should replace
-      // with multi-token return or something.
-      if (negs && !IsDigit(Peek())) {
+      bool is_neg = negs % 2 == 1;
+      if (More() && IsDigit(Peek())) {
+        return ParseNumber(!is_neg);
+      } else if (More() && MatchString("inff")) {
+        return ParseNumber(!is_neg, true, "inff");
+      } else {
+        // If there isn't a number right after either,
+        // this is really slow for lexing, should replace
+        // with multi-token return or something.
         pos = pos - (negs - 1);
         return NewToken(TokenType::kMinus);
       }
-
-      bool is_neg = negs % 2 == 1;
-      std::stringstream ss;
-      while (More() && IsNumeric(Peek())) {
-        ss << Next();
-      }
-
-      bool is_float = false;
-      // Remove trailing floating point prefix.
-      if (More() && Peek() == 'f') {
-        Next();
-        is_float = true;
-      }
-
-      return ParseNumber(!is_neg, is_float, ss.str());
+    } else if (IsDigit(next)) {
+      return ParseNumber(true);
+    } else if (MatchString("inff")) {
+      return ParseNumber(true, true, "inff");
     } else if (next == '.') {
       auto token = NewToken(TokenType::kPeriod);
       Next();
@@ -384,10 +411,6 @@ struct Tokenizer {
       return token;
     } else if (next == '+') {
       auto token = NewToken(TokenType::kPlus);
-      Next();
-      return token;
-    } else if (next == '-') {
-      auto token = NewToken(TokenType::kMinus);
       Next();
       return token;
     } else if (next == '*') {
@@ -519,20 +542,19 @@ struct Tokenizer {
     DLOG(INFO) << "tvm::parser::Tokenize";
     while (this->More()) {
       auto token = TokenizeOnce();
-      CHECK(token.defined());
+      ICHECK(token.defined());
       this->tokens.push_back(token);
     }
     this->tokens.push_back(NewToken(TokenType::kEndOfFile));
   }
 
-  explicit Tokenizer(DiagnosticContext* ctx, const SourceName& source_name,
-                     const std::string& source)
+  explicit Tokenizer(const DiagnosticContext& ctx, const Source& source)
       : diag_ctx(ctx),
-        source_name(source_name),
+        source_name(source->source_name),
         pos(0),
         col(1),
         line(1),
-        source(source),
+        source(source->source),
         tokens() {}
 };
 
@@ -559,15 +581,15 @@ std::vector<Token> Condense(const std::vector<Token>& tokens, Token* table) {
           i += 1;
           // TODO(@jroesch): merge spans
           auto tok = Token(current->span, TokenType::kLocal, next->data);
-          CHECK(tok.defined());
+          ICHECK(tok.defined());
           out.push_back(tok);
         } else if (next->token_type == TokenType::kInteger) {
           i += 1;
           auto tok = Token(current->span, TokenType::kGraph, next->data);
-          CHECK(tok.defined());
+          ICHECK(tok.defined());
           out.push_back(tok);
         } else {
-          CHECK(current.defined());
+          ICHECK(current.defined());
           out.push_back(current);
         }
         continue;
@@ -579,10 +601,10 @@ std::vector<Token> Condense(const std::vector<Token>& tokens, Token* table) {
           i += 1;
           // TODO(@jroesch): merge spans
           auto tok = Token(current->span, TokenType::kGlobal, next->data);
-          CHECK(tok.defined());
+          ICHECK(tok.defined());
           out.push_back(tok);
         } else {
-          CHECK(current.defined());
+          ICHECK(current.defined());
           out.push_back(current);
         }
         continue;
@@ -615,14 +637,13 @@ std::vector<Token> Condense(const std::vector<Token>& tokens, Token* table) {
   return out;
 }
 
-std::pair<std::vector<Token>, Token> Tokenize(DiagnosticContext* ctx, const SourceName& source_name,
-                                              const std::string& source) {
-  auto tokenizer = Tokenizer(ctx, source_name, source);
+std::pair<std::vector<Token>, Token> Tokenize(const DiagnosticContext& ctx, const Source& source) {
+  auto tokenizer = Tokenizer(ctx, source);
   tokenizer.Tokenize();
   Token meta_table(Span(), TokenType::kUnknown, ObjectRef());
   auto tokens = Condense(tokenizer.tokens, &meta_table);
   for (auto token : tokens) {
-    CHECK(token.defined());
+    ICHECK(token.defined());
   }
   return {tokens, meta_table};
 }

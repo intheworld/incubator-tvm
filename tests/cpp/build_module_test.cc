@@ -56,14 +56,14 @@ TEST(BuildModule, Basic) {
   auto module = build(lowered, target, Target());
 
   auto mali_target = Target("opencl -model=Mali-T860MP4@800Mhz -device=mali");
-  CHECK_EQ(mali_target->kind->name, "opencl");
-  CHECK_EQ(mali_target->keys.size(), 3);
-  CHECK_EQ(mali_target->keys[0], "mali");
-  CHECK_EQ(mali_target->keys[1], "opencl");
-  CHECK_EQ(mali_target->keys[2], "gpu");
-  CHECK_EQ(mali_target->GetAttr<String>("device").value(), "mali");
-  CHECK_EQ(mali_target->GetAttr<String>("model").value(), "Mali-T860MP4@800Mhz");
-  CHECK_EQ(mali_target->GetAttr<Integer>("max_num_threads").value(), 256);
+  ICHECK_EQ(mali_target->kind->name, "opencl");
+  ICHECK_EQ(mali_target->keys.size(), 3);
+  ICHECK_EQ(mali_target->keys[0], "mali");
+  ICHECK_EQ(mali_target->keys[1], "opencl");
+  ICHECK_EQ(mali_target->keys[2], "gpu");
+  ICHECK_EQ(mali_target->GetAttr<String>("device").value(), "mali");
+  ICHECK_EQ(mali_target->GetAttr<String>("model").value(), "Mali-T860MP4@800Mhz");
+  ICHECK_EQ(mali_target->GetAttr<Integer>("max_num_threads").value(), 256);
 }
 
 TEST(BuildModule, Heterogeneous) {
@@ -122,7 +122,7 @@ TEST(BuildModule, Heterogeneous) {
   auto module = build(inputs, Target());
 
   // Assertion for build.
-  CHECK_EQ(module->imports().size(), 1);
+  ICHECK_EQ(module->imports().size(), 1);
 
   // Execute the graph and check the correctness.
   // Setup graph json.
@@ -163,21 +163,21 @@ TEST(BuildModule, Heterogeneous) {
     pc[i] = i - 1.0;
   }
 
-  // Initialize graph runtime.
+  // Initialize graph executor.
   int cpu_dev_ty = static_cast<int>(kDLCPU);
   int cpu_dev_id = 0;
-  int gpu_dev_ty = static_cast<int>(kDLGPU);
+  int gpu_dev_ty = static_cast<int>(kDLCUDA);
   int gpu_dev_id = 0;
 
-  const runtime::PackedFunc* graph_runtime =
-      tvm::runtime::Registry::Get("tvm.graph_runtime.create");
+  const runtime::PackedFunc* graph_executor =
+      tvm::runtime::Registry::Get("tvm.graph_executor.create");
   runtime::Module mod =
-      (*graph_runtime)(json, module, cpu_dev_ty, cpu_dev_id, gpu_dev_ty, gpu_dev_id);
+      (*graph_executor)(json, module, cpu_dev_ty, cpu_dev_id, gpu_dev_ty, gpu_dev_id);
 
   // test FFI for module.
   auto test_ffi = PackedFunc([](TVMArgs args, TVMRetValue* rv) {
     int tcode = args[1];
-    CHECK_EQ(args[0].type_code(), tcode);
+    ICHECK_EQ(args[0].type_code(), tcode);
   });
 
   test_ffi(runtime::Module(mod), static_cast<int>(kTVMModuleHandle));
@@ -196,7 +196,7 @@ TEST(BuildModule, Heterogeneous) {
 
   // Check correctness.
   for (int i = 0; i < n; ++i) {
-    CHECK_LT(std::fabs(p_out[i] - (i + (i + 1.0) - (i - 1.0))), 1e-5);
+    ICHECK_LT(std::fabs(p_out[i] - (i + (i + 1.0) - (i - 1.0))), 1e-5);
   }
 }
 

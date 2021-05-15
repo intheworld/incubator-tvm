@@ -31,6 +31,7 @@
 #include <iostream>
 #include <set>
 #include <string>
+#include <thread>
 
 #include "../../src/runtime/rpc/rpc_endpoint.h"
 #include "../../src/runtime/rpc/rpc_socket_impl.h"
@@ -97,14 +98,15 @@ class RPCServer {
    * \brief Constructor.
    */
   RPCServer(std::string host, int port, int port_end, std::string tracker_addr, std::string key,
-            std::string custom_addr)
+            std::string custom_addr, std::string work_dir)
       : host_(std::move(host)),
         port_(port),
         my_port_(0),
         port_end_(port_end),
         tracker_addr_(std::move(tracker_addr)),
         key_(std::move(key)),
-        custom_addr_(std::move(custom_addr)) {}
+        custom_addr_(std::move(custom_addr)),
+        work_dir_(std::move(work_dir)) {}
 
   /*!
    * \brief Destructor.
@@ -167,14 +169,14 @@ class RPCServer {
         if (timer_pid == 0) {
           // Timer process
           sleep(timeout);
-          exit(0);
+          _exit(0);
         }
 
         const pid_t worker_pid = fork();
         if (worker_pid == 0) {
           // Worker process
-          ServerLoopProc(conn, addr);
-          exit(0);
+          ServerLoopProc(conn, addr, work_dir_);
+          _exit(0);
         }
 
         int status = 0;
@@ -200,7 +202,7 @@ class RPCServer {
       } else {
         auto pid = fork();
         if (pid == 0) {
-          ServerLoopProc(conn, addr);
+          ServerLoopProc(conn, addr, work_dir_);
           exit(0);
         }
         // Wait for the result
@@ -245,7 +247,7 @@ class RPCServer {
       support::TCPSocket conn = listen_sock_.Accept(addr);
 
       int code = kRPCMagic;
-      CHECK_EQ(conn.RecvAll(&code, sizeof(code)), sizeof(code));
+      ICHECK_EQ(conn.RecvAll(&code, sizeof(code)), sizeof(code));
       if (code != kRPCMagic) {
         conn.Close();
         LOG(FATAL) << "Client connected is not TVM RPC server";
@@ -253,7 +255,7 @@ class RPCServer {
       }
 
       int keylen = 0;
-      CHECK_EQ(conn.RecvAll(&keylen, sizeof(keylen)), sizeof(keylen));
+      ICHECK_EQ(conn.RecvAll(&keylen, sizeof(keylen)), sizeof(keylen));
 
       const char* CLIENT_HEADER = "client:";
       const char* SERVER_HEADER = "server:";
@@ -265,10 +267,10 @@ class RPCServer {
         continue;
       }
 
-      CHECK_NE(keylen, 0);
+      ICHECK_NE(keylen, 0);
       std::string remote_key;
       remote_key.resize(keylen);
-      CHECK_EQ(conn.RecvAll(&remote_key[0], keylen), keylen);
+      ICHECK_EQ(conn.RecvAll(&remote_key[0], keylen), keylen);
 
       std::stringstream ssin(remote_key);
       std::string arg0;
@@ -280,16 +282,16 @@ class RPCServer {
 
       if (arg0 != expect_header) {
         code = kRPCMismatch;
-        CHECK_EQ(conn.SendAll(&code, sizeof(code)), sizeof(code));
+        ICHECK_EQ(conn.SendAll(&code, sizeof(code)), sizeof(code));
         conn.Close();
         LOG(WARNING) << "Mismatch key from" << addr->AsString();
         continue;
       } else {
         code = kRPCSuccess;
-        CHECK_EQ(conn.SendAll(&code, sizeof(code)), sizeof(code));
+        ICHECK_EQ(conn.SendAll(&code, sizeof(code)), sizeof(code));
         keylen = int(server_key.length());
-        CHECK_EQ(conn.SendAll(&keylen, sizeof(keylen)), sizeof(keylen));
-        CHECK_EQ(conn.SendAll(server_key.c_str(), keylen), keylen);
+        ICHECK_EQ(conn.SendAll(&keylen, sizeof(keylen)), sizeof(keylen));
+        ICHECK_EQ(conn.SendAll(server_key.c_str(), keylen), keylen);
         LOG(INFO) << "Connection success " << addr->AsString();
 #ifndef __ANDROID__
         ssin >> *opts;
@@ -307,9 +309,10 @@ class RPCServer {
    * \param sock The socket information
    * \param addr The socket address information
    */
-  static void ServerLoopProc(support::TCPSocket sock, support::SockAddr addr) {
+  static void ServerLoopProc(support::TCPSocket sock, support::SockAddr addr,
+                             std::string work_dir) {
     // Server loop
-    const auto env = RPCEnv();
+    const auto env = RPCEnv(work_dir);
     RPCServerLoop(int(sock.sockfd));
     LOG(INFO) << "Finish serving " << addr.AsString();
     env.CleanUp();
@@ -325,7 +328,7 @@ class RPCServer {
     size_t pos = opts.rfind(option);
     if (pos != std::string::npos) {
       const std::string cmd = opts.substr(pos + option.size());
-      CHECK(support::IsNumber(cmd)) << "Timeout is not valid";
+      ICHECK(support::IsNumber(cmd)) << "Timeout is not valid";
       return std::stoi(cmd);
     }
     return 0;
@@ -338,6 +341,7 @@ class RPCServer {
   std::string tracker_addr_;
   std::string key_;
   std::string custom_addr_;
+  std::string work_dir_;
   support::TCPSocket listen_sock_;
   support::TCPSocket tracker_sock_;
 };
@@ -369,19 +373,19 @@ void ServerLoopFromChild(SOCKET socket) {
  * silent mode. Default=True
  */
 void RPCServerCreate(std::string host, int port, int port_end, std::string tracker_addr,
-                     std::string key, std::string custom_addr, bool silent) {
+                     std::string key, std::string custom_addr, std::string work_dir, bool silent) {
   if (silent) {
     // Only errors and fatal is logged
     dmlc::InitLogging("--minloglevel=2");
   }
   // Start the rpc server
   RPCServer rpc(std::move(host), port, port_end, std::move(tracker_addr), std::move(key),
-                std::move(custom_addr));
+                std::move(custom_addr), std::move(work_dir));
   rpc.Start();
 }
 
 TVM_REGISTER_GLOBAL("rpc.ServerCreate").set_body([](TVMArgs args, TVMRetValue* rv) {
-  RPCServerCreate(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
+  RPCServerCreate(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]);
 });
 }  // namespace runtime
 }  // namespace tvm

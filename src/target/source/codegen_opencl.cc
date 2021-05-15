@@ -79,7 +79,7 @@ std::string CodeGenOpenCL::Finish() {
 }
 
 void CodeGenOpenCL::BindThreadIndex(const IterVar& iv) {
-  CHECK(!var_idmap_.count(iv->var.get()));
+  ICHECK(!var_idmap_.count(iv->var.get()));
   runtime::ThreadScope ts = runtime::ThreadScope::Create(iv->thread_tag);
   std::ostringstream os;
   if (ts.rank == 1) {
@@ -93,7 +93,7 @@ void CodeGenOpenCL::BindThreadIndex(const IterVar& iv) {
 void CodeGenOpenCL::PrintType(DataType t, std::ostream& os) {  // NOLINT(*)
   int lanes = t.lanes();
   if (t.is_handle()) {
-    CHECK_EQ(lanes, 1) << "do not yet support vector types";
+    ICHECK_EQ(lanes, 1) << "do not yet support vector types";
     os << "void*";
     return;
   }
@@ -120,7 +120,7 @@ void CodeGenOpenCL::PrintType(DataType t, std::ostream& os) {  // NOLINT(*)
         break;
     }
     if (!fail && lanes == 1) return;
-    if (!fail && (lanes >= 2 && lanes <= 16)) {
+    if (!fail && ((lanes >= 2 && lanes <= 4) || lanes == 8 || lanes == 16)) {
       os << lanes;
       return;
     }
@@ -154,7 +154,7 @@ void CodeGenOpenCL::PrintType(DataType t, std::ostream& os) {  // NOLINT(*)
         break;
     }
     if (!fail && lanes == 1) return;
-    if (!fail && (lanes >= 2 && lanes <= 16)) {
+    if (!fail && ((lanes >= 2 && lanes <= 4) || lanes == 8 || lanes == 16)) {
       os << lanes;
       return;
     }
@@ -233,7 +233,7 @@ void CodeGenOpenCL::VisitExpr_(const CallNode* op, std::ostream& os) {
   if (op->op.same_as(builtin::address_of())) {
     // Overload tvm_address_of to add storage scope (e.g. __global).
     const LoadNode* load = op->args[0].as<LoadNode>();
-    CHECK(op->args.size() == 1 && load);
+    ICHECK(op->args.size() == 1 && load);
     os << "((";
     auto it = alloc_storage_scope_.find(load->buffer_var.get());
     if (it != alloc_storage_scope_.end()) {
@@ -283,23 +283,27 @@ void CodeGenOpenCL::VisitExpr_(const FloatImmNode* op, std::ostream& os) {  // N
 runtime::Module BuildOpenCL(IRModule mod, Target target) {
   using tvm::runtime::Registry;
   bool output_ssa = false;
-  CodeGenOpenCL cg;
-  cg.Init(output_ssa);
 
+  std::stringstream code;
+  const auto* fpostproc = Registry::Get("tvm_callback_opencl_postproc");
   for (auto kv : mod->functions) {
-    CHECK(kv.second->IsInstance<PrimFuncNode>()) << "CodeGenOpenCL: Can only take PrimFunc";
+    ICHECK(kv.second->IsInstance<PrimFuncNode>()) << "CodeGenOpenCL: Can only take PrimFunc";
+    code << "// Function: " << kv.first->name_hint << std::endl;
+    CodeGenOpenCL cg;
+    cg.Init(output_ssa);
     auto f = Downcast<PrimFunc>(kv.second);
     auto calling_conv = f->GetAttr<Integer>(tvm::attr::kCallingConv);
-    CHECK(calling_conv == CallingConv::kDeviceKernelLaunch)
+    ICHECK(calling_conv == CallingConv::kDeviceKernelLaunch)
         << "CodeGenOpenCL: expect calling_conv equals CallingConv::kDeviceKernelLaunch";
     cg.AddFunction(f);
+    std::string fsource = cg.Finish();
+    if (fpostproc) {
+      fsource = (*fpostproc)(fsource).operator std::string();
+    }
+    code << fsource;
   }
 
-  std::string code = cg.Finish();
-  if (const auto* f = Registry::Get("tvm_callback_opencl_postproc")) {
-    code = (*f)(code).operator std::string();
-  }
-  return OpenCLModuleCreate(code, "cl", ExtractFuncInfo(mod), code);
+  return OpenCLModuleCreate(code.str(), "cl", ExtractFuncInfo(mod), code.str());
 }
 
 TVM_REGISTER_GLOBAL("target.build.opencl").set_body_typed(BuildOpenCL);

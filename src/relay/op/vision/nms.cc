@@ -23,6 +23,7 @@
  */
 #include <tvm/relay/attrs/vision.h>
 #include <tvm/relay/op.h>
+#include <tvm/tir/op.h>
 
 namespace tvm {
 namespace relay {
@@ -31,10 +32,11 @@ TVM_REGISTER_NODE_TYPE(GetValidCountsAttrs);
 
 bool GetValidCountRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                       const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 2);
+  ICHECK_EQ(types.size(), 3);
   const auto* data = types[0].as<TensorTypeNode>();
+  if (data == nullptr) return false;
   const auto& dshape = data->shape;
-  CHECK_EQ(dshape.size(), 3) << "Input data should be 3-D.";
+  ICHECK_EQ(dshape.size(), 3) << "Input data should be 3-D.";
 
   std::vector<IndexExpr> oshape({data->shape[0]});
   std::vector<IndexExpr> oshape_indices({data->shape[0], data->shape[1]});
@@ -44,17 +46,16 @@ bool GetValidCountRel(const Array<Type>& types, int num_inputs, const Attrs& att
   fields.push_back(TensorType(oshape_indices, DataType::Int(32)));
 
   // assign output type
-  reporter->Assign(types[1], TupleType(Array<Type>(fields)));
+  reporter->Assign(types[2], TupleType(Array<Type>(fields)));
   return true;
 }
 
-Expr MakeGetValidCounts(Expr data, double score_threshold, int id_index, int score_index) {
+Expr MakeGetValidCounts(Expr data, Expr score_threshold, int id_index, int score_index) {
   auto attrs = make_object<GetValidCountsAttrs>();
-  attrs->score_threshold = score_threshold;
   attrs->id_index = id_index;
   attrs->score_index = score_index;
   static const Op& op = Op::Get("vision.get_valid_counts");
-  return Call(op, {data}, Attrs(attrs), {});
+  return Call(op, {data, score_threshold}, Attrs(attrs), {});
 }
 
 TVM_REGISTER_GLOBAL("relay.op.vision._make.get_valid_counts").set_body_typed(MakeGetValidCounts);
@@ -64,8 +65,9 @@ RELAY_REGISTER_OP("vision.get_valid_counts")
 a score threshold. Also moves valid boxes to the top of
 input data.
 )doc" TVM_ADD_FILELINE)
-    .set_num_inputs(1)
+    .set_num_inputs(2)
     .add_argument("data", "Tensor", "Input data.")
+    .add_argument("score_threshold", "Tensor", "Minimum Score.")
     .set_support_level(5)
     .add_type_rel("GetValidCount", GetValidCountRel);
 
@@ -73,14 +75,16 @@ TVM_REGISTER_NODE_TYPE(NonMaximumSuppressionAttrs);
 
 bool NMSRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
             const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 5);
+  ICHECK_EQ(types.size(), 6);
   const auto* data = types[0].as<TensorTypeNode>();
+  if (data == nullptr) return false;
   const auto* valid_count = types[1].as<TensorTypeNode>();
+  if (valid_count == nullptr) return false;
   const NonMaximumSuppressionAttrs* param = attrs.as<NonMaximumSuppressionAttrs>();
   const auto& dshape = data->shape;
   const auto& vshape = valid_count->shape;
-  CHECK_EQ(dshape.size(), 3) << "Input data should be 3-D.";
-  CHECK_EQ(vshape.size(), 1) << "Input valid count should be 1-D.";
+  ICHECK_EQ(dshape.size(), 3) << "Input data should be 3-D.";
+  ICHECK_EQ(vshape.size(), 1) << "Input valid count should be 1-D.";
 
   // assign output type
   if (param->return_indices) {
@@ -90,18 +94,17 @@ bool NMSRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
     fields.push_back(TensorType(oshape, DataType::Int(32)));
     std::vector<IndexExpr> countshape({dshape[0], 1});
     fields.push_back(TensorType(countshape, DataType::Int(32)));
-    reporter->Assign(types[4], TupleType(Array<Type>(fields)));
+    reporter->Assign(types[5], TupleType(Array<Type>(fields)));
   } else {
-    reporter->Assign(types[4], TensorType(dshape, data->dtype));
+    reporter->Assign(types[5], TensorType(dshape, data->dtype));
   }
   return true;
 }
 
-Expr MakeNMS(Expr data, Expr valid_count, Expr indices, Expr max_output_size, double iou_threshold,
+Expr MakeNMS(Expr data, Expr valid_count, Expr indices, Expr max_output_size, Expr iou_threshold,
              bool force_suppress, int top_k, int coord_start, int score_index, int id_index,
              bool return_indices, bool invalid_to_bottom) {
   auto attrs = make_object<NonMaximumSuppressionAttrs>();
-  attrs->iou_threshold = iou_threshold;
   attrs->force_suppress = force_suppress;
   attrs->top_k = top_k;
   attrs->coord_start = coord_start;
@@ -110,7 +113,7 @@ Expr MakeNMS(Expr data, Expr valid_count, Expr indices, Expr max_output_size, do
   attrs->return_indices = return_indices;
   attrs->invalid_to_bottom = invalid_to_bottom;
   static const Op& op = Op::Get("vision.non_max_suppression");
-  return Call(op, {data, valid_count, indices, max_output_size}, Attrs(attrs), {});
+  return Call(op, {data, valid_count, indices, max_output_size, iou_threshold}, Attrs(attrs), {});
 }
 
 TVM_REGISTER_GLOBAL("relay.op.vision._make.non_max_suppression").set_body_typed(MakeNMS);
@@ -121,13 +124,76 @@ be in the format of [class_id, score, left, top, right, bottom]
 or [score, left, top, right, bottom]. Set id_index to be -1 to
 ignore class_id axis.
 )doc" TVM_ADD_FILELINE)
-    .set_num_inputs(4)
+    .set_num_inputs(5)
     .add_argument("data", "Tensor", "Input data.")
     .add_argument("valid_count", "Tensor", "Number of valid anchor boxes.")
     .add_argument("indices", "Tensor", "Corresponding indices in original input tensor.")
     .add_argument("max_output_size", "Tensor", "Max number of output valid boxes.")
+    .add_argument("iou_threshold", "Tensor", "Threshold for box overlap.")
     .set_support_level(5)
     .add_type_rel("NMS", NMSRel);
+
+TVM_REGISTER_NODE_TYPE(AllClassNonMaximumSuppressionAttrs);
+
+bool AllClassNMSRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
+                    const TypeReporter& reporter) {
+  ICHECK_EQ(types.size(), 6);
+  const auto* boxes = types[0].as<TensorTypeNode>();
+  if (boxes == nullptr) return false;
+  const auto* scores = types[1].as<TensorTypeNode>();
+  if (scores == nullptr) return false;
+
+  const auto& boxes_shape = boxes->shape;
+  const auto& scores_shape = scores->shape;
+  ICHECK_EQ(boxes_shape.size(), 3) << "Input boxes should be 3-D.";
+  ICHECK_EQ(scores_shape.size(), 3) << "Input scores count should be 3-D.";
+
+  IndexExpr batch = boxes_shape[0];
+  IndexExpr num_classes = scores_shape[1];
+  IndexExpr num_boxes = boxes_shape[1];
+
+  IndexExpr num_total_boxes = Any();
+  if (!batch.as<AnyNode>() && !num_boxes.as<AnyNode>()) {
+    num_total_boxes = batch * num_classes * num_boxes;
+  }
+
+  // assign output type
+  std::vector<Type> fields;
+  std::vector<IndexExpr> oshape{num_total_boxes, 3};
+  fields.push_back(TensorType(oshape, DataType::Int(64)));
+  std::vector<IndexExpr> countshape{1};
+  fields.push_back(TensorType(countshape, DataType::Int(64)));
+  reporter->Assign(types[5], TupleType(Array<Type>(fields)));
+  return true;
+}
+
+Expr MakeAllClassNMS(Expr boxes, Expr scores, Expr max_output_boxes_per_class, Expr iou_threshold,
+                     Expr score_threshold) {
+  auto attrs = make_object<AllClassNonMaximumSuppressionAttrs>();
+  static const Op& op = Op::Get("vision.all_class_non_max_suppression");
+  return Call(op, {boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold},
+              Attrs(attrs), {});
+}
+
+TVM_REGISTER_GLOBAL("relay.op.vision._make.all_class_non_max_suppression")
+    .set_body_typed(MakeAllClassNMS);
+
+RELAY_REGISTER_OP("vision.all_class_non_max_suppression")
+    .describe(R"doc(Non-maximum suppression operator for object detection, corresponding to ONNX
+    NonMaxSuppression and TensorFlow combined_non_max_suppression.
+    NMS is performed for each class separately
+)doc" TVM_ADD_FILELINE)
+    .set_num_inputs(5)
+    .add_argument("boxes", "Tensor", "The input boxes in the format [batch, num_boxes, 4].")
+    .add_argument("scores", "Tensor",
+                  "Scores for each box and class in the format [batch, num_classes, num_boxes].")
+    .add_argument("max_output_boxes_per_class", "Tensor",
+                  "The maximum number of output boxes per class.")
+    .add_argument("iou_threshold", "Tensor", "The IoU threshold for box the overlap test.")
+    .add_argument("score_threshold", "Tensor",
+                  "The score threshold to filter out low score boxes early.")
+    .set_support_level(5)
+    .add_type_rel("AllClassNMS", AllClassNMSRel);
 
 }  // namespace relay
 }  // namespace tvm

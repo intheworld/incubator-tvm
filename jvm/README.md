@@ -97,7 +97,7 @@ There's nothing special for this part. The following Python snippet generate add
 import os
 import tvm
 from tvm import te
-from tvm.contrib import cc, util
+from tvm.contrib import cc, utils
 
 def test_add(target_dir):
     n = te.var("n")
@@ -125,7 +125,7 @@ The following code snippet demonstrate how to load generated shared library (add
 ```java
 import org.apache.tvm.Module;
 import org.apache.tvm.NDArray;
-import org.apache.tvm.TVMContext;
+import org.apache.tvm.Device;
 
 import java.io.File;
 import java.util.Arrays;
@@ -135,12 +135,12 @@ public class LoadAddFunc {
     String loadingDir = args[0];
     Module fadd = Module.load(loadingDir + File.separator + "add_cpu.so");
 
-    TVMContext ctx = TVMContext.cpu();
+    Device dev = Device.cpu();
 
     long[] shape = new long[]{2};
-    NDArray arr = NDArray.empty(shape, ctx);
+    NDArray arr = NDArray.empty(shape, dev);
     arr.copyFrom(new float[]{3f, 4f});
-    NDArray res = NDArray.empty(shape, ctx);
+    NDArray res = NDArray.empty(shape, dev);
 
     fadd.entryFunc().pushArg(arr).pushArg(arr).pushArg(res).invoke();
     System.out.println(Arrays.toString(res.asFloatArray()));
@@ -164,7 +164,7 @@ server.start();
 This will open a socket and wait for remote requests. You can use Java, Python, or any other frontend to make an RPC call. Here's an example for calling remote function `test.rpc.strcat` in Java.
 
 ```java
-RPCSession client = Client.connect("localhost", port.value);
+RPCSession client = Client.connect("127.0.0.1", port.value);
 Function func = client.getFunction("test.rpc.strcat");
 String result = func.call("abc", 11L).asString();
 ```
@@ -176,4 +176,4 @@ Server server = new Server(proxyHost, proxyPort, "key");
 server.start();
 ```
 
-You can also use `StandaloneServerProcessor` and `ConnectProxyServerProcessor` to build your own RPC server. Refer to [Android RPC Server](https://github.com/apache/incubator-tvm/blob/master/apps/android_rpc/app/src/main/java/org/apache/tvm/tvmrpc/RPCProcessor.java) for more details.
+You can also use `StandaloneServerProcessor` and `ConnectProxyServerProcessor` to build your own RPC server. Refer to [Android RPC Server](https://github.com/apache/tvm/blob/main/apps/android_rpc/app/src/main/java/org/apache/tvm/tvmrpc/RPCProcessor.java) for more details.

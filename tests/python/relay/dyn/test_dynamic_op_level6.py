@@ -22,8 +22,8 @@ from tvm import te
 from tvm import relay
 import tvm.testing
 
-# TODO(mbrookhart): Enable when VM supports heterogenus execution
-# @tvm.testing.uses_gpu
+
+@tvm.testing.uses_gpu
 def test_dynamic_topk():
     def verify_topk(k, axis, ret_type, is_ascend, dtype):
         shape = (20, 100)
@@ -52,10 +52,10 @@ def test_dynamic_topk():
                 np_values[i, :] = np_data[i, np_indices[i, :]]
         np_indices = np_indices.astype(dtype)
 
-        for target, ctx in tvm.testing.enabled_targets():
+        for target, dev in tvm.testing.enabled_targets():
             for kind in ["vm", "debug"]:
                 mod = tvm.ir.IRModule.from_expr(func)
-                intrp = relay.create_executor(kind, mod=mod, ctx=ctx, target=target)
+                intrp = relay.create_executor(kind, mod=mod, device=dev, target=target)
                 op_res = intrp.evaluate()(np_data, np.array([k]).astype("float32"))
                 if ret_type == "both":
                     tvm.testing.assert_allclose(op_res[0].asnumpy(), np_values)

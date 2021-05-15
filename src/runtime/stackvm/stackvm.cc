@@ -360,7 +360,7 @@ void StackVM::Run(State* s) const {
       }
       case PUSH_VALUE: {
         int relpos = code[pc + 1].v_int;
-        CHECK_LE(relpos, 0);
+        ICHECK_LE(relpos, 0);
         stack[sp + 1] = stack[sp + relpos];
         sp += 1;
         pc += 2;
@@ -390,7 +390,7 @@ void StackVM::Run(State* s) const {
         break;
       }
       case ASSERT: {
-        CHECK(stack[sp].v_int64) << str_data[code[pc + 1].v_int];
+        ICHECK(stack[sp].v_int64) << str_data[code[pc + 1].v_int];
         sp -= 1;
         pc += 2;
         break;
@@ -417,8 +417,8 @@ void StackVM::Run(State* s) const {
       }
       case ASSERT_SP: {
         int64_t expected = code[pc + 1].v_int;
-        CHECK_EQ(sp, expected) << "sp assertion failed, expected=" << expected << " now=" << sp
-                               << ", pc=" << pc;
+        ICHECK_EQ(sp, expected) << "sp assertion failed, expected=" << expected << " now=" << sp
+                                << ", pc=" << pc;
         pc += 2;
         break;
       }
@@ -478,11 +478,11 @@ void StackVM::Run(State* s) const {
             break;
           }
           case StackVM::kArrDeviceId: {
-            stack[sp].v_int64 = arr[index].ctx.device_id;
+            stack[sp].v_int64 = arr[index].device.device_id;
             break;
           }
           case StackVM::kArrDeviceType: {
-            stack[sp].v_int64 = static_cast<int64_t>(arr[index].ctx.device_type);
+            stack[sp].v_int64 = static_cast<int64_t>(arr[index].device.device_type);
             break;
           }
           case StackVM::kArrAddr: {
@@ -537,11 +537,11 @@ void StackVM::Run(State* s) const {
             break;
           }
           case StackVM::kArrDeviceId: {
-            arr[index].ctx.device_id = static_cast<int>(stack[sp].v_int64);
+            arr[index].device.device_id = static_cast<int>(stack[sp].v_int64);
             break;
           }
           case StackVM::kArrDeviceType: {
-            arr[index].ctx.device_type = static_cast<DLDeviceType>(stack[sp].v_int64);
+            arr[index].device.device_type = static_cast<DLDeviceType>(stack[sp].v_int64);
             break;
           }
           case StackVM::kTVMValueContent: {
@@ -594,19 +594,19 @@ void StackVM::Run(State* s) const {
         break;
       }
     }
-    CHECK_GE(sp, alloca_sp) << "touch allocated space";
-    CHECK_LT(sp, stack_cap) << "Stack overflow";
+    ICHECK_GE(sp, alloca_sp) << "touch allocated space";
+    ICHECK_LT(sp, stack_cap) << "Stack overflow";
   }
 }
 
 const PackedFunc& StackVM::GetExtern(State* s, int fid) const {
-  CHECK_LT(static_cast<size_t>(fid), extern_func_cache_.size());
+  ICHECK_LT(static_cast<size_t>(fid), extern_func_cache_.size());
   // allow race write in this, since write is idempotent
   PackedFunc& f = extern_func_cache_[fid];
   if (f == nullptr) {
-    CHECK(s->mod_ctx != nullptr) << "No local context is set in stackvm";
+    ICHECK(s->mod_ctx != nullptr) << "No local context is set in stackvm";
     const PackedFunc* pf = s->mod_ctx->GetFuncFromEnv(extern_func_name[fid]);
-    CHECK(pf != nullptr);
+    ICHECK(pf != nullptr);
     f = *pf;
   }
   return f;

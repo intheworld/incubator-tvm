@@ -80,7 +80,7 @@
     } else {
       initialized_ = true;
       self.statusLabel.text = @"Proxy connected.";
-      CHECK(handler_ != nullptr);
+      ICHECK(handler_ != nullptr);
     }
   }
   const int kBufferSize = 4 << 10;
@@ -100,7 +100,7 @@
         if (flag == 2) {
           [self onShutdownReceived];
         }
-      } catch (const dmlc::Error& e) {
+      } catch (const tvm::Error& e) {
         [self close];
       }
     }
@@ -123,7 +123,7 @@
       if (flag == 2) {
         [self onShutdownReceived];
       }
-    } catch (const dmlc::Error& e) {
+    } catch (const tvm::Error& e) {
       [self close];
     }
   }
@@ -158,7 +158,7 @@
   [outputStream_ open];
   [inputStream_ open];
   handler_ = tvm::runtime::CreateServerEventHandler(outputStream_, key_, "%toinit");
-  CHECK(handler_ != nullptr);
+  ICHECK(handler_ != nullptr);
   self.infoText.text = @"";
   self.statusLabel.text = @"Connecting...";
 }

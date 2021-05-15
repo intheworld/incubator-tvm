@@ -66,6 +66,34 @@ def test_const_loop():
     assert not any(collect_visit(stmt, lambda x: isinstance(x, tvm.tir.IfThenElse)))
 
 
+def test_no_unroll_loop():
+    n = 21
+    A = te.placeholder((n,), name="A")
+    B = te.placeholder((n,), name="B")
+
+    T = te.compute((n,), lambda i: A[i] + B[i])
+    s = te.create_schedule(T.op)
+    xo, xi = s[T].split(T.op.axis[0], factor=4)
+
+    bounds = tvm.te.schedule.InferBound(s)
+    stmt = tvm.te.schedule.ScheduleOps(s, bounds)
+
+    mod = tvm.IRModule.from_expr(tvm.tir.PrimFunc([], stmt))
+    with tvm.transform.PassContext(
+        config={
+            "tir.LoopPartition": {
+                "partition_const_loop": True,
+                "no_unroll_loop_with_extent_one": True,
+            }
+        }
+    ):
+        mod = tvm.tir.transform.LoopPartition()(mod)
+        mod = tvm.tir.transform.Simplify()(mod)
+        stmt = tvm.tir.transform.RemoveNoOp()(mod)["main"].body
+
+    assert sum(collect_visit(stmt, lambda x: isinstance(x, tvm.tir.For))) == 4
+
+
 def test_multi_loop():
     ib = tvm.tir.ir_builder.create()
     m = te.size_var("m")
@@ -459,24 +487,24 @@ def test_double_splitting_with_indivisible_factors():
     assert not any(collect_visit(top_produce, lambda x: isinstance(x, tvm.tir.IfThenElse)))
 
     # check functional correctness of generated code
-    ctx = tvm.context(target, 0)
+    dev = tvm.device(target, 0)
     a = tvm.nd.array(
         numpy.ones(
             m,
         ).astype(dtype),
-        ctx,
+        dev,
     )
     c = tvm.nd.array(
         numpy.zeros(
             m,
         ).astype(dtype),
-        ctx,
+        dev,
     )
     d = tvm.nd.array(
         numpy.zeros(
             m,
         ).astype(dtype),
-        ctx,
+        dev,
     )
     func(a, c, d)
     tvm.testing.assert_allclose(c.asnumpy(), a.asnumpy(), rtol=1e-5)

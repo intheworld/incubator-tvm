@@ -18,4 +18,4 @@
 """The Relay IR namespace containing transformations."""
 # transformation passes
 from .transform import *
-from . import memory_alloc
+from .recast import recast

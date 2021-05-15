@@ -36,7 +36,7 @@ namespace relay {
 
 /*!
  * \brief This function returns a module that will be used by
- * the relay graph runtime for collecting the calibration data.
+ * the relay graph executor for collecting the calibration data.
  * To do that, we first make all inputs and outputs of each
  * function into the final output (i.e., the final output is a
  * tuple of tensors). Then, we change the compiler attribute of
@@ -52,7 +52,7 @@ class Collector : public ExprRewriter {
     // intrinsic functions are excluded for now
     if (call->op->IsInstance<GlobalVarNode>()) {
       auto var = Downcast<GlobalVar>(call->op);
-      CHECK(module_->ContainGlobalVar(var->name_hint)) << "Function " << var << " is not defined";
+      ICHECK(module_->ContainGlobalVar(var->name_hint)) << "Function " << var << " is not defined";
       // we only handle functions with Compiler attribute set
       auto func = Downcast<Function>(module_->Lookup(var));
       if (func->GetAttr<String>(attr::kCompiler)) {
@@ -74,10 +74,10 @@ class Collector : public ExprRewriter {
 Expr FlattenOutputTuple(const Array<Expr>& exprs) {
   Array<Expr> fields;
   for (const auto& it : exprs) {
-    CHECK(it->checked_type_.defined());
+    ICHECK(it->checked_type_.defined());
     if (auto* tn = it->checked_type_.as<TupleTypeNode>()) {
       // TODO(seanlatias): for now input argument cannot be a tuple
-      CHECK(it->IsInstance<CallNode>());
+      ICHECK(it->IsInstance<CallNode>());
       for (size_t i = 0; i < tn->fields.size(); i++) {
         fields.push_back(TupleGetItem(it, i));
       }
@@ -106,7 +106,7 @@ IRModule GetCalibrateModule(IRModule module) {
       }
     }
   }
-  // reset the attribute of functions for running graph runtime
+  // reset the attribute of functions for running graph executor
   for (const auto& pair : glob_funcs) {
     if (auto* fn = pair.second.as<FunctionNode>()) {
       auto func = GetRef<Function>(fn);
@@ -140,8 +140,8 @@ class OutputMapper : public ExprRewriter {
   Expr Rewrite_(const CallNode* call, const Expr& post) final {
     if (call->op->IsInstance<GlobalVarNode>()) {
       auto var = Downcast<GlobalVar>(call->op);
-      CHECK(module_->ContainGlobalVar(var->name_hint)) << "Function " << var << " is not defined";
-      CHECK_EQ(output_map_->count(var), 0)
+      ICHECK(module_->ContainGlobalVar(var->name_hint)) << "Function " << var << " is not defined";
+      ICHECK_EQ(output_map_->count(var), 0)
           << "Repeated function call " << var << " is not supported.";
       auto func = Downcast<Function>(module_->Lookup(var));
       // we only handle functions with Compiler attribute set

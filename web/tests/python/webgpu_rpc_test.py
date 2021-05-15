@@ -23,10 +23,10 @@ Connect javascript end to the websocket port and connect to the RPC.
 import tvm
 from tvm import te
 from tvm import rpc
-from tvm.contrib import util, emcc
+from tvm.contrib import utils, emcc
 import numpy as np
 
-proxy_host = "localhost"
+proxy_host = "127.0.0.1"
 proxy_port = 9090
 
 
@@ -50,7 +50,7 @@ def test_rpc():
     s[B].bind(xo, te.thread_axis("blockIdx.x"))
 
     fadd = tvm.build(s, [A, B], target_device, target_host=target_host, name="addone")
-    temp = util.tempdir()
+    temp = utils.tempdir()
 
     wasm_path = temp.relpath("addone_gpu.wasm")
     fadd.export_library(wasm_path, emcc.create_tvmjs_wasm)
@@ -65,10 +65,10 @@ def test_rpc():
 
     def check(remote):
         # basic function checks.
-        ctx = remote.webgpu(0)
+        dev = remote.webgpu(0)
         adata = np.random.uniform(size=n).astype(A.dtype)
-        a = tvm.nd.array(adata, ctx)
-        b = tvm.nd.array(np.zeros(n, dtype=A.dtype), ctx)
+        a = tvm.nd.array(adata, dev)
+        b = tvm.nd.array(np.zeros(n, dtype=A.dtype), dev)
 
         np.testing.assert_equal(a.asnumpy(), adata)
         f1 = remote.system_lib()

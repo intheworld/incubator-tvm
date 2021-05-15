@@ -19,9 +19,10 @@
 
 /*!
  * \file relay/backend/build_module.cc
- * \brief Code generation for TVM's graph runtime.
+ * \brief Code generation for TVM's graph executor.
  */
 #include <tvm/driver/driver_api.h>
+#include <tvm/ir/expr.h>
 #include <tvm/relay/analysis.h>
 #include <tvm/relay/expr.h>
 #include <tvm/relay/qnn/transform.h>
@@ -30,12 +31,16 @@
 
 #include <memory>
 
+#include "../../target/func_registry_generator.h"
 #include "../../target/source/codegen_source_base.h"
 #include "compile_engine.h"
 #include "utils.h"
 
 namespace tvm {
 namespace relay {
+namespace transform {
+Pass LabelOps();
+}
 namespace backend {
 
 using TargetsMap = Map<tvm::Integer, tvm::Target>;
@@ -43,7 +48,6 @@ using namespace tvm::relay::transform;
 
 /*!
  * \brief Output of building module
- *
  */
 struct BuildOutput {
   std::string graph_json;
@@ -51,30 +55,15 @@ struct BuildOutput {
   std::unordered_map<std::string, tvm::runtime::NDArray> params;
 };
 
-/*!
- * \brief GraphCodegen module wrapper
- *
- */
-struct GraphCodegen {
- public:
-  GraphCodegen() {
-    auto pf = GetPackedFunc("relay.build_module._GraphRuntimeCodegen");
-    mod = (*pf)();
-  }
-  ~GraphCodegen() {}
-
+struct ExecutorCodegen {
   void Init(runtime::Module* m, TargetsMap targets) { CallFunc("init", m, targets); }
 
   void Codegen(const Function& func) { CallFunc("codegen", func); }
 
-  std::string GetJSON() { return CallFunc<std::string>("get_graph_json", nullptr); }
+  virtual void UpdateOutput(BuildOutput* ret) = 0;
 
-  Array<tvm::runtime::Module> GetExternalModules() {
-    return CallFunc<Array<tvm::runtime::Module>>("get_external_modules", nullptr);
-  }
-
-  Map<String, IRModule> GetIRModule() {
-    return CallFunc<Map<String, IRModule>>("get_irmodule", nullptr);
+  Map<String, FunctionInfo> GetFunctionMetadata() {
+    return CallFunc<Map<String, FunctionInfo>>("get_function_metadata", nullptr);
   }
 
   std::unordered_map<std::string, tvm::runtime::NDArray> GetParams() {
@@ -87,6 +76,28 @@ struct GraphCodegen {
     }
     return ret;
   }
+
+  std::unordered_map<std::string, int64_t> GetParamIds() {
+    std::unordered_map<std::string, int64_t> ret;
+    auto names = CallFunc<Array<runtime::String>>("list_params_name", nullptr);
+    for (const auto& expr : names) {
+      // Implicit cast from runtime::String to std::string
+      std::string key = expr;
+      ret[key] = CallFunc<int64_t>("get_param_id", key);
+    }
+    return ret;
+  }
+
+  Array<tvm::runtime::Module> GetExternalModules() {
+    return CallFunc<Array<tvm::runtime::Module>>("get_external_modules", nullptr);
+  }
+
+  Map<String, IRModule> GetIRModule() {
+    return CallFunc<Map<String, IRModule>>("get_irmodule", nullptr);
+  }
+
+  runtime::Metadata GetMetadata() { return CallFunc<runtime::Metadata>("get_metadata"); }
+  virtual ~ExecutorCodegen() {}
 
  protected:
   tvm::runtime::Module mod;
@@ -102,6 +113,48 @@ struct GraphCodegen {
     return;
   }
 };
+
+struct AOTCodegen : ExecutorCodegen {
+  AOTCodegen() {
+    auto pf = GetPackedFunc("relay.build_module._AOTExecutorCodegen");
+    mod = (*pf)();
+  }
+
+  void UpdateOutput(BuildOutput* ret) override { ret->graph_json = ""; }
+
+  ~AOTCodegen() {}
+};
+
+/*!
+ * \brief GraphCodegen module wrapper
+ *
+ */
+struct GraphCodegen : ExecutorCodegen {
+  GraphCodegen() {
+    auto pf = GetPackedFunc("relay.build_module._GraphExecutorCodegen");
+    mod = (*pf)();
+  }
+  void UpdateOutput(BuildOutput* ret) override { ret->graph_json = GetGraphJSON(); }
+
+  std::string GetGraphJSON() { return CallFunc<std::string>("get_graph_json", nullptr); }
+
+  ~GraphCodegen() {}
+};
+
+/*!
+ * \brief Executor codegen factory function
+ */
+std::unique_ptr<ExecutorCodegen> MakeExecutorCodegen(String executor_str) {
+  std::unique_ptr<ExecutorCodegen> ret;
+  if (executor_str == runtime::kTvmExecutorGraph) {
+    ret = std::make_unique<GraphCodegen>();
+  } else if (executor_str == runtime::kTvmExecutorAot) {
+    ret = std::make_unique<AOTCodegen>();
+  } else {
+    CHECK(false) << "Executor " << executor_str << " not supported";
+  }
+  return ret;
+}
 
 /*!
  * \brief Relay build module
@@ -124,8 +177,8 @@ class RelayBuildModule : public runtime::ModuleNode {
           [sptr_to_self, this](TVMArgs args, TVMRetValue* rv) { *rv = this->GetModule(); });
     } else if (name == "build") {
       return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-        CHECK_EQ(args.num_args, 3);
-        this->Build(args[0], args[1], args[2]);
+        ICHECK_EQ(args.num_args, 4);
+        this->Build(args[0], args[1], args[2], args[3]);
       });
     } else if (name == "list_params") {
       return PackedFunc(
@@ -142,15 +195,19 @@ class RelayBuildModule : public runtime::ModuleNode {
       });
     } else if (name == "get_irmodule") {
       return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-        *rv = this->graph_codegen_->GetIRModule();
+        *rv = this->executor_codegen_->GetIRModule();
       });
     } else if (name == "get_external_modules") {
       return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-        *rv = this->graph_codegen_->GetExternalModules();
+        *rv = this->executor_codegen_->GetExternalModules();
+      });
+    } else if (name == "get_function_metadata") {
+      return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
+        *rv = this->executor_codegen_->GetFunctionMetadata();
       });
     } else if (name == "optimize") {
       return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-        CHECK_EQ(args.num_args, 2);
+        ICHECK_EQ(args.num_args, 2);
         *rv = this->Optimize(args[0], args[1], this->params_);
       });
     } else {
@@ -215,15 +272,19 @@ class RelayBuildModule : public runtime::ModuleNode {
   const char* type_key() const final { return "RelayBuildModule"; }
 
   /*!
-   * \brief Build relay IRModule for graph runtime
+   * \brief Build relay IRModule for graph executor
    *
    * \param mod Relay IRModule
    * \param target Target device
    * \param target_host Host target device
    */
-  void Build(IRModule mod, const TargetsMap& targets, const tvm::Target& target_host) {
+  void Build(IRModule mod, const TargetsMap& targets, const tvm::Target& target_host,
+             const String executor) {
+    // Create protected variable targets_ from ground up
     targets_ = targets;
     target_host_ = target_host;
+    executor_ = executor;
+    CheckAndUpdateHostConsistency(&targets_, &target_host_);
     BuildRelay(mod, params_);
     // Clear compile engine so that tuning schedules can be changed between runs. See issue #6096.
     CompileEngine::Global()->Clear();
@@ -241,8 +302,10 @@ class RelayBuildModule : public runtime::ModuleNode {
    */
   IRModule Optimize(IRModule relay_module, const TargetsMap& targets,
                     const std::unordered_map<std::string, runtime::NDArray>& params) {
+    ICHECK(relay_module.defined()) << "The IRModule must be defined for the Relay compiler.";
+
     if (params.size()) {
-      CHECK(relay_module->ContainGlobalVar("main")) << "Missing the main entry function";
+      ICHECK(relay_module->ContainGlobalVar("main")) << "Missing the main entry function";
       GlobalVar main_glb_var = relay_module->GetGlobalVar("main");
       Function main_func = Downcast<Function>(relay_module->Lookup(main_glb_var));
       auto new_main = BindParamsByName(main_func, params);
@@ -264,6 +327,10 @@ class RelayBuildModule : public runtime::ModuleNode {
     }
 
     pass_seqs.push_back(transform::SimplifyInference());
+
+    // Convert Dynamic ops to static versions
+    pass_seqs.push_back(transform::DynamicToStatic());
+
     PackedFunc fskip = PackedFunc([](TVMArgs args, TVMRetValue* rv) {
       Expr expr = args[0];
       *rv = false;
@@ -290,6 +357,7 @@ class RelayBuildModule : public runtime::ModuleNode {
 
     // Alter layout transformation is only applied to homogeneous execution yet.
     if (targets.size() == 1) {
+      pass_seqs.push_back(transform::InferType());
       pass_seqs.push_back(transform::AlterOpLayout());
     }
 
@@ -313,13 +381,31 @@ class RelayBuildModule : public runtime::ModuleNode {
       Optional<Integer> opt_fallback_dev =
           pass_ctx->GetConfig("relay.fallback_device_type", Integer(static_cast<int>(kDLCPU)));
       auto fallback_dev = opt_fallback_dev.value();
-      CHECK_GT(fallback_dev->value, 0U);
+      ICHECK_GT(fallback_dev->value, 0U);
       relay_module = RunDeviceAnnotationPass(relay_module, fallback_dev->value);
     }
 
     // Fuse the operations if it is needed.
     relay_module = transform::FuseOps()(relay_module);
+
+    // Do layout rewrite for auto-scheduler.
+    if (backend::IsAutoSchedulerEnabled() && targets.size() == 1) {
+      const auto& target = (*targets.begin()).second;
+      Pass major_pass = transform::AutoSchedulerLayoutRewrite();
+      bool enable_layout_rewrite_targets =
+          target->kind->device_type == kDLCPU || target->GetAttr<String>("device", "") == "mali";
+      if (enable_layout_rewrite_targets && pass_ctx.PassEnabled(major_pass->Info())) {
+        With<Target> tctx(target);
+        relay_module = major_pass(relay_module);
+        // Defuse ops to fold constants, then fuse them again
+        relay_module = transform::DefuseOps()(relay_module);
+        relay_module = transform::FoldConstant()(relay_module);
+        relay_module = transform::FuseOps()(relay_module);
+      }
+    }
+
     relay_module = transform::InferType()(relay_module);
+
     // Inline the functions that have been lifted by the module scope.
     //
     // TODO(@zhiics) Note that we need to be careful about the subgraphs with
@@ -327,7 +413,10 @@ class RelayBuildModule : public runtime::ModuleNode {
     // inline functions. However, this should be very unlikely for accelerators
     // and vendor-provided libraries. So we don't handle for now.
     relay_module = transform::Inline()(relay_module);
-    CHECK(relay_module.defined());
+    relay_module = transform::InferType()(relay_module);
+    relay_module = transform::LabelOps()(relay_module);
+
+    ICHECK(relay_module.defined());
 
     return relay_module;
   }
@@ -340,7 +429,7 @@ class RelayBuildModule : public runtime::ModuleNode {
   Target CreateDefaultTarget(int device_type) {
     std::string name = runtime::DeviceName(device_type);
     if (name == "cpu") return Target("llvm");
-    if (name == "gpu") return Target("cuda");
+    if (name == "cuda") return Target("cuda");
     return Target(name);
   }
 
@@ -375,7 +464,7 @@ class RelayBuildModule : public runtime::ModuleNode {
     UpdateHeterogeneousInputs(fallback_device);
     auto rewrite = transform::RewriteAnnotatedOps(fallback_device);
     auto updated_module = rewrite(relay_module);
-    CHECK(updated_module.defined());
+    ICHECK(updated_module.defined());
 
     tvm::Map<Expr, Integer> device_map;
     for (const auto& it : updated_module->functions) {
@@ -400,11 +489,11 @@ class RelayBuildModule : public runtime::ModuleNode {
           break;
         }
         for (auto kv : annotation_map) {
-          CHECK_EQ(kv.second->value, dev_type) << "Expressions in the function are "
-                                               << "annotated with various device types,"
-                                               << "but not device copy operators "
-                                               << "found. Please check the "
-                                               << "RewriteAnnotation pass.";
+          ICHECK_EQ(kv.second->value, dev_type) << "Expressions in the function are "
+                                                << "annotated with various device types,"
+                                                << "but not device copy operators "
+                                                << "found. Please check the "
+                                                << "RewriteAnnotation pass.";
         }
         targets_.Set(0, CreateDefaultTarget(dev_type));
       }
@@ -420,31 +509,54 @@ class RelayBuildModule : public runtime::ModuleNode {
    */
   void BuildRelay(IRModule relay_module,
                   const std::unordered_map<std::string, tvm::runtime::NDArray>& params) {
+    Target target_host = GetTargetHost();
+    // If no target_host has been set, we choose a default one, which is
+    // llvm if "codegen.LLVMModuleCreate" is accessible.
+    const runtime::PackedFunc* pf = runtime::Registry::Get("codegen.LLVMModuleCreate");
+    if (!target_host.defined()) target_host = (pf != nullptr) ? Target("llvm") : Target("stackvm");
+
+    // Update all the targets in the targets_ TargetsMap
+    CheckAndUpdateHostConsistency(&targets_, &target_host);
+
     // Relay IRModule -> IRModule optimizations.
     relay_module = Optimize(relay_module, targets_, params);
+
     // Get the updated function.
     auto func = Downcast<Function>(relay_module->Lookup("main"));
 
     // Generate code for the updated function.
-    graph_codegen_ = std::unique_ptr<GraphCodegen>(new GraphCodegen());
-    graph_codegen_->Init(nullptr, targets_);
-    graph_codegen_->Codegen(func);
+    executor_codegen_ = MakeExecutorCodegen(executor_);
+    executor_codegen_->Init(nullptr, targets_);
+    executor_codegen_->Codegen(func);
+    executor_codegen_->UpdateOutput(&ret_);
+    ret_.params = executor_codegen_->GetParams();
 
-    ret_.graph_json = graph_codegen_->GetJSON();
-    ret_.params = graph_codegen_->GetParams();
+    auto lowered_funcs = executor_codegen_->GetIRModule();
 
-    auto lowered_funcs = graph_codegen_->GetIRModule();
+    // Generate a placeholder function that attaches linked params as its arguments.
+    if (target_host->GetAttr<Bool>("link-params").value_or(Bool(false))) {
+      CHECK(pf != nullptr) << "Unable to link-params with no target_host and no llvm codegen.";
+      auto param_ids = executor_codegen_->GetParamIds();
+      auto link_params = Map<String, tir::LinkedParam>();
+      for (auto param : ret_.params) {
+        link_params.Set(param.first, tir::LinkedParam(param_ids[param.first], param.second));
+      }
+
+      Map<String, ObjectRef> dict;
+      dict.Set(tvm::tir::attr::kLinkedParams, link_params);
+      dict.Set(tvm::attr::kGlobalSymbol, String(::tvm::runtime::symbol::tvm_lookup_linked_param));
+      DictAttrs attrs{dict};
+      auto prim = tir::PrimFunc(Array<tir::Var>(), tir::SeqStmt(Array<tir::Stmt>()), VoidType(),
+                                Map<tir::Var, tir::Buffer>(), attrs);
+      if (lowered_funcs.find(target_host->str()) == lowered_funcs.end()) {
+        lowered_funcs.Set(target_host->str(), IRModule(Map<GlobalVar, BaseFunc>({})));
+      }
+      lowered_funcs[target_host->str()]->Add(
+          GlobalVar(::tvm::runtime::symbol::tvm_lookup_linked_param), prim);
+    }
 
     // When there is no lowered_funcs due to reasons such as optimization.
     if (lowered_funcs.size() == 0) {
-      Target target_host = GetTargetHost();
-
-      // If no target_host has been set, we choose a default one, which is
-      // llvm if "codegen.LLVMModuleCreate" is accessible.
-      const runtime::PackedFunc* pf = runtime::Registry::Get("codegen.LLVMModuleCreate");
-      if (!target_host.defined())
-        target_host = (pf != nullptr) ? Target("llvm") : Target("stackvm");
-
       if (target_host.defined() && target_host->kind->name == "llvm") {
         // If we can decide the target is LLVM, we then create an empty LLVM module.
         ret_.mod = (*pf)(target_host->str(), "empty_module");
@@ -452,17 +564,27 @@ class RelayBuildModule : public runtime::ModuleNode {
         // If we cannot decide the target is LLVM, we create an empty CSourceModule.
         // The code content is initialized with ";" to prevent complaining
         // from CSourceModuleNode::SaveToFile.
-        ret_.mod = tvm::codegen::CSourceModuleCreate(";", "");
+        ret_.mod = tvm::codegen::CSourceModuleCreate(";", "", Array<String>{});
       }
     } else {
       ret_.mod = tvm::build(lowered_funcs, target_host_);
     }
 
-    Array<tvm::runtime::Module> ext_mods = graph_codegen_->GetExternalModules();
-    // TODO(zhiics) We should be able to completely switch to MetadataModule no
-    // matter whether there are external modules or not.
-    if (!ext_mods.empty()) {
-      ret_.mod = tvm::codegen::CreateMetadataModule(ret_.params, ret_.mod, ext_mods);
+    auto ext_mods = executor_codegen_->GetExternalModules();
+    ret_.mod = tvm::codegen::CreateMetadataModule(ret_.params, ret_.mod, ext_mods, GetTargetHost(),
+                                                  executor_codegen_->GetMetadata());
+    // Remove external params which were stored in metadata module.
+    for (tvm::runtime::Module mod : ext_mods) {
+      auto pf_var = mod.GetFunction("get_const_vars");
+      if (pf_var != nullptr) {
+        Array<String> variables = pf_var();
+        for (size_t i = 0; i < variables.size(); i++) {
+          auto it = ret_.params.find(variables[i].operator std::string());
+          if (it != ret_.params.end()) {
+            ret_.params.erase(it);
+          }
+        }
+      }
     }
   }
 
@@ -481,7 +603,7 @@ class RelayBuildModule : public runtime::ModuleNode {
   }
 
  protected:
-  std::unique_ptr<GraphCodegen> graph_codegen_;
+  std::unique_ptr<ExecutorCodegen> executor_codegen_;
   /*! \brief target device */
   TargetsMap targets_;
   /*! \brief target host device */
@@ -490,6 +612,12 @@ class RelayBuildModule : public runtime::ModuleNode {
   std::unordered_map<std::string, runtime::NDArray> params_;
   /*! \brief building output */
   BuildOutput ret_;
+  /*!
+   * \brief Executor used to execute the model:
+   * - graph: use the json graph executor
+   * - aot: use the aot executor
+   */
+  String executor_;
 };
 
 runtime::Module RelayBuildCreate() {

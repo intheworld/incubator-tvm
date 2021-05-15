@@ -67,7 +67,7 @@ env = vta.get_env()
 
 # We'll need the TVM RPC module and the VTA simulator module
 from tvm import rpc
-from tvm.contrib import util
+from tvm.contrib import utils
 from vta.testing import simulator
 
 # We read the Pynq RPC host IP address and port number from the OS environment
@@ -91,8 +91,12 @@ if env.TARGET == "pynq" or env.TARGET == "de10nano":
     vta.program_fpga(remote, bitstream=None)
 
 # In simulation mode, host the RPC server locally.
-elif env.TARGET == "sim":
+elif env.TARGET in ("sim", "tsim", "intelfocl"):
     remote = rpc.LocalSession()
+
+    if env.TARGET in ["intelfocl"]:
+        # program intelfocl aocx
+        vta.program_fpga(remote, bitstream="vta.bitstream")
 
 ######################################################################
 # Computation Declaration
@@ -115,7 +119,7 @@ elif env.TARGET == "sim":
 # The last operation is a cast and copy back to DRAM, into results tensor
 # :code:`C`.
 #
-# .. image:: https://raw.githubusercontent.com/uwsaml/web-data/master/vta/tutorial/vadd_dataflow.png
+# .. image:: https://raw.githubusercontent.com/uwsampl/web-data/main/vta/tutorial/vadd_dataflow.png
 #      :align: center
 
 ######################################################################
@@ -320,7 +324,7 @@ my_vadd = vta.build(s, [A, B, C], "ext_dev", env.target_host, name="my_vadd")
 # execution.
 
 # Write the compiled module into an object file.
-temp = util.tempdir()
+temp = utils.tempdir()
 my_vadd.save(temp.relpath("vadd.o"))
 
 # Send the executable over RPC

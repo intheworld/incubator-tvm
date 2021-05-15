@@ -47,7 +47,7 @@ void Analyzer::Bind(const Var& var, const PrimExpr& expr, bool allow_override) {
 }
 
 void Analyzer::Bind(const Var& var, const Range& range, bool allow_override) {
-  CHECK(range.defined());
+  ICHECK(range.defined());
   if (tir::is_one(range->extent)) {
     this->Bind(var, range->min, allow_override);
   } else {
@@ -64,7 +64,7 @@ void Analyzer::Bind(const Map<Var, Range>& variables, bool allow_override) {
 }
 
 void ConstraintContext::EnterWithScope() {
-  CHECK(exit_ == nullptr);
+  ICHECK(exit_ == nullptr);
   // entering the scope.
   auto f0 = analyzer_->const_int_bound.EnterConstraint(constraint_);
   auto f1 = analyzer_->modular_set.EnterConstraint(constraint_);
@@ -78,7 +78,7 @@ void ConstraintContext::EnterWithScope() {
 }
 
 void ConstraintContext::ExitWithScope() {
-  CHECK(exit_ != nullptr);
+  ICHECK(exit_ != nullptr);
   exit_();
 }
 
@@ -98,6 +98,13 @@ bool Analyzer::CanProveLess(const PrimExpr& expr, int64_t upper_bound) {
   auto bd = this->const_int_bound(this->rewrite_simplify(expr));
   if (bd->max_value < upper_bound) return true;
   return false;
+}
+
+bool Analyzer::CanProveEqual(const PrimExpr& lhs, const PrimExpr& rhs) {
+  const auto* clhs = lhs.as<IntImmNode>();
+  const auto* crhs = rhs.as<IntImmNode>();
+  if (clhs && crhs) return clhs->value == crhs->value;
+  return CanProve(lhs - rhs == 0);
 }
 
 bool Analyzer::CanProve(const PrimExpr& expr) {

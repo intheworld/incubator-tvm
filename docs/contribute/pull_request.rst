@@ -20,13 +20,13 @@ Submit a Pull Request
 
 This is a quick guide to submit a pull request, please also refer to the detailed guidelines.
 
-- Before submit, please rebase your code on the most recent version of master, you can do it by
+- Before submit, please rebase your code on the most recent version of main, you can do it by
 
   .. code:: bash
 
     git remote add upstream [url to tvm repo]
     git fetch upstream
-    git rebase upstream/master
+    git rebase upstream/main
 
 - Make sure code style check pass by typing the following command, and all the existing test-cases pass.
 
@@ -41,15 +41,15 @@ This is a quick guide to submit a pull request, please also refer to the detaile
 
     # While the lint commands used should be identical to those run in CI, this command reproduces
     # the CI lint procedure exactly (typically helpful for debugging lint script errors).
-    docker/bash.sh tvmai/ci-lint ./tests/scripts/task_lint.sh
+    docker/bash.sh ci_lint ./tests/scripts/task_lint.sh
 
   When the clang-format lint check fails, run git-clang-format as follows to automatically reformat
   your code:
 
   .. code:: bash
 
-    # Run clang-format check for all the files that changed since upstream/master
-    docker/bash.sh tvmai/ci-lint ./tests/lint/git-clang-format.sh upstream/master
+    # Run clang-format check for all the files that changed since upstream/main
+    docker/bash.sh ci_lint ./tests/lint/git-clang-format.sh upstream/main
 
 - Add test-cases to cover the new features or bugfix the patch introduces.
 - Document the code you wrote, see more at :ref:`doc_guide`
@@ -88,8 +88,11 @@ Here is the protocol to update CI image:
 
 Testing
 -------
-Even though we have hooks to run unit tests automatically for each pull request, It's always recommended to run unit tests
+Even though we have hooks to run unit tests automatically for each pull request, it's always recommended to run unit tests
 locally beforehand to reduce reviewers' burden and speedup review process.
+
+Running the C++ tests requires installation of gtest, following the instructions in
+:ref:`install-from-source-cpp-tests`
 
 C++
 ^^^
@@ -98,17 +101,7 @@ C++
   # assume you are in tvm source root
   TVM_ROOT=`pwd`
 
-  # you need to install google test first, gtest will be installed to $TVM_ROOT/lib
-  apt-get install -y libgtest-dev
-  CACHE_PREFIX=. make -f 3rdparty/dmlc-core/scripts/packages.mk gtest
-
-  mkdir build
-  cd build
-  GTEST_LIB=$TVM_ROOT/lib cmake -DUSE_LLVM=ON ..
-  make cpptest -j$(nproc)
-  for test in *_test; do
-    ./$test
-  done
+  ./tests/scripts/task_cpp_unittest.sh
 
 Python
 ^^^^^^
@@ -116,7 +109,7 @@ Necessary dependencies:
 
 .. code:: bash
 
-  pip install --user pytest Cython
+  pip install --user pytest Cython synr
 
 If you want to run all tests:
 

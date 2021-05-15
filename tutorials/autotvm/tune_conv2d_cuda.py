@@ -22,6 +22,10 @@ Tuning High Performance Convolution on NVIDIA GPUs
 This is an advanced tutorial for writing high performance tunable template for
 NVIDIA GPU. By running auto-tuner on this template, we can outperform the
 vendor provided library CuDNN in many cases.
+
+Note that this tutorial will not run on Windows or recent versions of macOS. To
+get it to run, you will need to wrap the body of this tutorial in a :code:`if
+__name__ == "__main__":` block.
 """
 
 ######################################################################
@@ -32,7 +36,7 @@ vendor provided library CuDNN in many cases.
 #
 # .. code-block:: bash
 #
-#   pip3 install --user psutil xgboost tornado
+#   pip3 install --user psutil xgboost tornado cloudpickle
 #
 # To make TVM run faster in tuning, it is recommended to use cython
 # as FFI of tvm. In the root directory of tvm, execute
@@ -49,9 +53,9 @@ import sys
 import numpy as np
 
 import tvm
-from tvm import te
-from tvm import topi
+from tvm import te, topi, testing
 from tvm.topi.testing import conv2d_nchw_python
+import tvm.testing
 
 from tvm import autotvm
 
@@ -226,15 +230,15 @@ a_np = np.random.uniform(size=(N, CI, H, W)).astype(np.float32)
 w_np = np.random.uniform(size=(CO, CI, KH, KW)).astype(np.float32)
 c_np = conv2d_nchw_python(a_np, w_np, strides, padding)
 
-ctx = tvm.gpu()
-a_tvm = tvm.nd.array(a_np, ctx=ctx)
-w_tvm = tvm.nd.array(w_np, ctx=ctx)
-c_tvm = tvm.nd.empty(c_np.shape, ctx=ctx)
+dev = tvm.cuda()
+a_tvm = tvm.nd.array(a_np, device=dev)
+w_tvm = tvm.nd.array(w_np, device=dev)
+c_tvm = tvm.nd.empty(c_np.shape, device=dev)
 func(a_tvm, w_tvm, c_tvm)
 
 tvm.testing.assert_allclose(c_np, c_tvm.asnumpy(), rtol=1e-2)
 
 # Evaluate running time. Here we choose a large repeat number (400) to reduce the noise
 # and the overhead of kernel launch. You can also use nvprof to validate the result.
-evaluator = func.time_evaluator(func.entry_name, ctx, number=400)
+evaluator = func.time_evaluator(func.entry_name, dev, number=400)
 print("Time cost of this operator: %f" % evaluator(a_tvm, w_tvm, c_tvm).mean)

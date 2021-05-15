@@ -20,8 +20,8 @@ from tvm import topi
 import numpy as np
 from tvm.contrib.pickle_memoize import memoize
 from scipy import signal
-from tvm.topi.util import get_const_tuple
-from tvm.topi.nn.util import get_pad_tuple
+from tvm.topi.utils import get_const_tuple
+from tvm.topi.nn.utils import get_pad_tuple
 import tvm.topi.testing
 from tvm.topi.cuda.depthwise_conv2d import schedule_depthwise_conv2d_backward_input_nhwc
 import tvm.testing
@@ -59,7 +59,7 @@ def verify_depthwise_conv2d_back_input(
     schedule = schedule_depthwise_conv2d_backward_input_nhwc(In_grad)
 
     def check_device(device):
-        ctx = tvm.context(device, 0)
+        dev = tvm.device(device, 0)
         if not tvm.testing.device_enabled(device):
             print("Skip because %s is not enabled" % device)
             return
@@ -117,11 +117,11 @@ def verify_depthwise_conv2d_back_input(
 
         (out_grad_np, filter_np, in_grad_np) = get_ref_data()
 
-        out_grad_tvm = tvm.nd.array(out_grad_np, ctx)
-        filter_tvm = tvm.nd.array(filter_np, ctx)
-        in_grad_tvm = tvm.nd.array(np.zeros(shape=ishape, dtype=dtype), ctx)
+        out_grad_tvm = tvm.nd.array(out_grad_np, dev)
+        filter_tvm = tvm.nd.array(filter_np, dev)
+        in_grad_tvm = tvm.nd.array(np.zeros(shape=ishape, dtype=dtype), dev)
         # launch the kernel
-        timer = f.time_evaluator(f.entry_name, ctx, number=1)
+        timer = f.time_evaluator(f.entry_name, dev, number=1)
         tcost = timer(filter_tvm, out_grad_tvm, in_grad_tvm).mean
         tvm.testing.assert_allclose(in_grad_np, in_grad_tvm.asnumpy(), rtol=1e-5)
 

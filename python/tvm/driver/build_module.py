@@ -231,9 +231,8 @@ def _build_for_device(input_mod, target, target_host):
     mdev : tvm.module
         A module that contains device code.
     """
-    target = Target(target)
-    target_host = Target(target_host)
-    device_type = ndarray.context(target.kind.name, 0).device_type
+    target, target_host = Target.check_and_update_host_consist(target, target_host)
+    device_type = ndarray.device(target.kind.name, 0).device_type
 
     mod_mixed = input_mod
     mod_mixed = tvm.tir.transform.Apply(lambda f: f.with_attr("target", target))(mod_mixed)
@@ -264,6 +263,7 @@ def _build_for_device(input_mod, target, target_host):
             tvm.tir.transform.LowerWarpMemory(),
             tvm.tir.transform.Simplify(),
             tvm.tir.transform.LowerDeviceStorageAccessInfo(),
+            tvm.tir.transform.LowerCustomDatatypes(),
             tvm.tir.transform.LowerIntrin(),
         ]
     )
@@ -276,9 +276,10 @@ def _build_for_device(input_mod, target, target_host):
                 lambda f: "calling_conv" not in f.attrs
                 or f.attrs["calling_conv"].value != CallingConv.DEVICE_KERNEL_LAUNCH
             ),
-            tvm.tir.transform.Apply(lambda f: f.with_attr("target", target)),
+            tvm.tir.transform.Apply(lambda f: f.with_attr("target", target_host)),
             tvm.tir.transform.LowerTVMBuiltin(),
             tvm.tir.transform.LowerDeviceStorageAccessInfo(),
+            tvm.tir.transform.LowerCustomDatatypes(),
             tvm.tir.transform.LowerIntrin(),
             tvm.tir.transform.CombineContextCall(),
         ]
@@ -379,7 +380,10 @@ def build(inputs, args=None, target=None, target_host=None, name="default_functi
     elif isinstance(inputs, tvm.IRModule):
         input_mod = inputs
     elif not isinstance(inputs, (dict, container.Map)):
-        raise ValueError("inputs must be Schedule, IRModule or dict of target to IRModule")
+        raise ValueError(
+            f"Inputs must be Schedule, IRModule or dict of target to IRModule, "
+            f"but got {type(inputs)}."
+        )
 
     if not isinstance(inputs, (dict, container.Map)):
         target = Target.current() if target is None else target
@@ -394,15 +398,23 @@ def build(inputs, args=None, target=None, target_host=None, name="default_functi
         if not isinstance(mod, tvm.IRModule):
             raise ValueError("inputs must be Schedule, IRModule," "or dict of str to IRModule.")
 
+    target_input_mod, target_host = Target.check_and_update_host_consist(
+        target_input_mod, target_host
+    )
+
     if not target_host:
-        for tar, _ in target_input_mod.items():
+        for tar, mod in target_input_mod.items():
             tar = Target(tar)
-            device_type = ndarray.context(tar.kind.name, 0).device_type
+            device_type = ndarray.device(tar.kind.name, 0).device_type
             if device_type == ndarray.cpu(0).device_type:
                 target_host = tar
                 break
     if not target_host:
         target_host = "llvm" if tvm.runtime.enabled("llvm") else "stackvm"
+
+    target_input_mod, target_host = Target.check_and_update_host_consist(
+        target_input_mod, target_host
+    )
 
     mod_host_all = tvm.IRModule({})
 
@@ -419,4 +431,23 @@ def build(inputs, args=None, target=None, target_host=None, name="default_functi
     for mdev in device_modules:
         if mdev:
             rt_mod_host.import_module(mdev)
+
+    if not isinstance(target_host, Target):
+        target_host = Target(target_host)
+    if (
+        target_host.attrs.get("runtime", tvm.runtime.String("c++")) == "c"
+        and target_host.attrs.get("system-lib", 0) == 1
+    ):
+        if target_host.kind.name == "c":
+            create_csource_crt_metadata_module = tvm._ffi.get_global_func(
+                "runtime.CreateCSourceCrtMetadataModule"
+            )
+            return create_csource_crt_metadata_module([rt_mod_host], target_host)
+
+        if target_host.kind.name == "llvm":
+            create_llvm_crt_metadata_module = tvm._ffi.get_global_func(
+                "runtime.CreateLLVMCrtMetadataModule"
+            )
+            return create_llvm_crt_metadata_module([rt_mod_host], target_host)
+
     return rt_mod_host

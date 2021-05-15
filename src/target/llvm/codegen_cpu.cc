@@ -119,15 +119,9 @@ void CodeGenCPU::AddFunction(const PrimFunc& f) {
   CodeGenLLVM::AddFunction(f);
   if (f_tvm_register_system_symbol_ != nullptr) {
     auto global_symbol = f->GetAttr<String>(tvm::attr::kGlobalSymbol);
-    CHECK(global_symbol.defined())
+    ICHECK(global_symbol.defined())
         << "CodeGenLLVM: Expect PrimFunc to have the global_symbol attribute";
     export_system_symbols_.emplace_back(
-        std::make_pair(global_symbol.value().operator std::string(), function_));
-  } else if (target_c_runtime_) {
-    auto global_symbol = f->GetAttr<String>(tvm::attr::kGlobalSymbol);
-    CHECK(global_symbol.defined())
-        << "CodeGenLLVM: Expect PrimFunc to have the global_symbol attribute";
-    registry_functions_.emplace_back(
         std::make_pair(global_symbol.value().operator std::string(), function_));
   }
   AddDebugInformation(function_);
@@ -136,7 +130,7 @@ void CodeGenCPU::AddFunction(const PrimFunc& f) {
 // Following Glow |DebugInfo::generateFunctionDebugInfo|, https://git.io/fjadv
 void CodeGenCPU::AddDebugInformation(llvm::Function* function) {
 #if TVM_LLVM_VERSION >= 50 && TVM_LLVM_VERSION < 70
-  CHECK(!function->getSubprogram());
+  ICHECK(!function->getSubprogram());
   llvm::SmallVector<llvm::Metadata*, 4> paramTys;
   llvm::DIType* returnTy =
       getDebugType(builder_.get(), dbg_info_->di_builder_.get(), function->getReturnType());
@@ -159,9 +153,9 @@ void CodeGenCPU::AddDebugInformation(llvm::Function* function) {
       true, 0 /* line number */, llvm::DINode::FlagPrototyped, true /* isOptimized */);
 #endif
 
-  CHECK(DIFunction);
+  ICHECK(DIFunction);
   function->setSubprogram(DIFunction);
-  CHECK_EQ(function->getSubprogram(), DIFunction);
+  ICHECK_EQ(function->getSubprogram(), DIFunction);
 
   IRBuilder builder(&function->getEntryBlock());
   if (!function->getEntryBlock().empty()) {
@@ -223,7 +217,7 @@ llvm::DIType* CodeGenCPU::getDebugType(IRBuilder* builder, llvm::DIBuilder* di_b
 
 void CodeGenCPU::AddMainFunction(const std::string& entry_func_name) {
   llvm::Function* f = module_->getFunction(entry_func_name);
-  CHECK(f) << "Function " << entry_func_name << "does not in module";
+  ICHECK(f) << "Function " << entry_func_name << "does not in module";
   llvm::Type* type = llvm::ArrayType::get(t_char_, entry_func_name.length() + 1);
   llvm::GlobalVariable* global =
       new llvm::GlobalVariable(*module_, type, true, llvm::GlobalValue::WeakAnyLinkage, nullptr,
@@ -233,6 +227,14 @@ void CodeGenCPU::AddMainFunction(const std::string& entry_func_name) {
 #else
   global->setAlignment(1);
 #endif
+  // comdat is needed for windows select any linking to work
+  // set comdat to Any(weak linking)
+  if (target_machine_->getTargetTriple().isOSWindows()) {
+    llvm::Comdat* comdat = module_->getOrInsertComdat(runtime::symbol::tvm_module_main);
+    comdat->setSelectionKind(llvm::Comdat::Any);
+    global->setComdat(comdat);
+  }
+
   global->setInitializer(llvm::ConstantDataArray::getString(*ctx_, entry_func_name));
   global->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
 }
@@ -250,7 +252,7 @@ llvm::Value* CodeGenCPU::CreateStructRefPtr(DataType t, llvm::Value* buf, llvm::
     if (buf->getType() == t_void_p_) {
       buf = builder_->CreatePointerCast(buf, t_tvm_array_->getPointerTo());
     } else {
-      CHECK_EQ(buf->getType(), t_tvm_array_->getPointerTo());
+      ICHECK_EQ(buf->getType(), t_tvm_array_->getPointerTo());
     }
   }
   switch (kind) {
@@ -288,8 +290,8 @@ llvm::Value* CodeGenCPU::CreateStructRefPtr(DataType t, llvm::Value* buf, llvm::
       return builder_->CreateInBoundsGEP(buf, {index, ConstInt32(1), ConstInt32(0)});
     }
     case builtin::kTVMValueContent: {
-      CHECK_EQ(t.lanes(), 1);
-      CHECK(t.is_handle() || t.bits() == 64);
+      ICHECK_EQ(t.lanes(), 1);
+      ICHECK(t.is_handle() || t.bits() == 64);
       if (t.is_int()) {
         buf = builder_->CreatePointerCast(buf, t_int64_->getPointerTo());
         return builder_->CreateInBoundsGEP(buf, index);
@@ -297,7 +299,7 @@ llvm::Value* CodeGenCPU::CreateStructRefPtr(DataType t, llvm::Value* buf, llvm::
         buf = builder_->CreatePointerCast(buf, t_float64_->getPointerTo());
         return builder_->CreateInBoundsGEP(buf, index);
       } else {
-        CHECK(t.is_handle());
+        ICHECK(t.is_handle());
         buf = builder_->CreatePointerCast(buf, t_tvm_value_->getPointerTo());
         buf = builder_->CreateInBoundsGEP(buf, index);
         return builder_->CreatePointerCast(buf, t_void_p_->getPointerTo());
@@ -358,11 +360,18 @@ llvm::GlobalVariable* CodeGenCPU::InitContextPtr(llvm::Type* p_type, std::string
 #endif
   gv->setInitializer(llvm::Constant::getNullValue(p_type));
   gv->setDLLStorageClass(llvm::GlobalValue::DLLStorageClassTypes::DLLExportStorageClass);
+  // comdat is needed for windows select any linking to work
+  // set comdat to Any(weak linking)
+  if (target_machine_->getTargetTriple().isOSWindows()) {
+    llvm::Comdat* comdat = module_->getOrInsertComdat(name);
+    comdat->setSelectionKind(llvm::Comdat::Any);
+    gv->setComdat(comdat);
+  }
   return gv;
 }
 
 llvm::Value* CodeGenCPU::GetContextPtr(llvm::GlobalVariable* gv) {
-  CHECK(gv != nullptr);
+  ICHECK(gv != nullptr);
 #if TVM_LLVM_VERSION >= 110
   llvm::LoadInst* faddr = builder_->CreateAlignedLoad(gv, llvm::Align(gv->getAlignment()));
 #else
@@ -428,11 +437,14 @@ void CodeGenCPU::CreateComputeScope(const AttrStmtNode* op) {
     arg_types.push_back(value->getType());
   }
   llvm::FunctionType* ftype = llvm::FunctionType::get(t_int_, arg_types, false);
+  // $xxx_compute_ functions are not global. They should be marked as static (via InternalLinkage)
+  // to call them correctly on MIPS platform (CALL16 issue)
+  // Linkage ld Error: CALL16 reloc at 0x290 not against global symbol
   llvm::Function* fcompute = llvm::Function::Create(
-      ftype, llvm::Function::PrivateLinkage,
+      ftype, llvm::Function::InternalLinkage,
       op->value.as<StringImmNode>()->value.operator llvm::StringRef(), module_.get());
   BasicBlock* compute_call_end = CheckCallSuccess(builder_->CreateCall(fcompute, arg_values));
-  // setup compute fuinction.
+  // setup compute function.
   std::unordered_map<const VarNode*, llvm::Value*> new_vmap;
   size_t idx = 0;
   for (auto it = fcompute->arg_begin(); it != fcompute->arg_end(); ++it, ++idx) {
@@ -481,7 +493,7 @@ llvm::Value* CodeGenCPU::PackClosureData(const Array<Var>& vfields, uint64_t* nu
   std::vector<llvm::Type*> fields;
   for (Var v : vfields) {
     auto it = var_map_.find(v.get());
-    CHECK(it != var_map_.end());
+    ICHECK(it != var_map_.end());
     fields.push_back(it->second->getType());
   }
   llvm::StructType* tcdata = llvm::StructType::create(fields);
@@ -548,7 +560,7 @@ void CodeGenCPU::CreateParallelLaunch(const Stmt& body, int num_task) {
   std::swap(var_map_, new_vmap);
   std::swap(parallel_env_, par_env);
   std::swap(function_, f);
-  CHECK_NE(par_env.parallel_loop_count, 0) << "Cannot find parallel loop within parallel launch";
+  ICHECK_NE(par_env.parallel_loop_count, 0) << "Cannot find parallel loop within parallel launch";
   builder_->SetInsertPoint(par_launch_end);
 }
 
@@ -591,7 +603,7 @@ void CodeGenCPU::CreateStaticInit(const std::string& init_fname, const Stmt& bod
   // setup new variable map, swap it with current var context.
   std::unordered_map<const VarNode*, llvm::Value*> new_vmap;
   UnpackClosureData(cdata, vfields, &new_vmap);
-  CHECK(parallel_env_.penv == nullptr);
+  ICHECK(parallel_env_.penv == nullptr);
   std::swap(function_, f);
   std::swap(var_map_, new_vmap);
   this->VisitStmt(body);
@@ -682,7 +694,7 @@ llvm::BasicBlock* CodeGenCPU::MakeCallPacked(const Array<PrimExpr>& args, llvm::
   llvm::Value* handle = GetPackedFuncHandle(func_name);
   // call the function
   int64_t nargs = end - begin;
-  CHECK_GE(nargs, 0);
+  ICHECK_GE(nargs, 0);
   llvm::Value* stack_value = MakeValue(args[1]);
   llvm::Value* stack_tcode = MakeValue(args[2]);
   llvm::Value* arg_value = builder_->CreateInBoundsGEP(
@@ -711,7 +723,7 @@ llvm::BasicBlock* CodeGenCPU::MakeCallPacked(const Array<PrimExpr>& args, llvm::
 }
 
 llvm::Value* CodeGenCPU::CreateCallPacked(const CallNode* op) {
-  CHECK_EQ(op->args.size(), 5U);
+  ICHECK_EQ(op->args.size(), 5U);
   llvm::Value* rvalue = nullptr;
   llvm::Value* ret_tcode = nullptr;
   MakeCallPacked(op->args, &rvalue, &ret_tcode, op->dtype, op->args[3].as<IntImmNode>()->value,
@@ -721,7 +733,7 @@ llvm::Value* CodeGenCPU::CreateCallPacked(const CallNode* op) {
 
 llvm::Value* CodeGenCPU::CreateCallTracePacked(const CallNode* op) {
   using llvm::BasicBlock;
-  CHECK_EQ(op->args.size(), 6U);
+  ICHECK_EQ(op->args.size(), 6U);
   llvm::Value* rvalue = nullptr;
   llvm::Value* ret_tcode = nullptr;
   BasicBlock* end_block =
@@ -776,47 +788,55 @@ llvm::Value* CodeGenCPU::RuntimeTVMParallelBarrier() {
   return GetContextPtr(gv_tvm_parallel_barrier_);
 }
 
-void CodeGenCPU::AddStartupFunction() {
-  if (registry_functions_.size() != 0) {
-    CHECK(is_system_lib_) << "Loading of --system-lib modules is yet to be defined for C runtime";
-    std::vector<std::string> symbols;
-    std::vector<llvm::Constant*> funcs;
-    for (auto sym : registry_functions_) {
-      symbols.emplace_back(sym.first);
-      funcs.emplace_back(llvm::ConstantExpr::getBitCast(
-          sym.second, ftype_tvm_backend_packed_c_func_->getPointerTo()));
-    }
-    llvm::DataLayout layout(module_.get());
-    llvm::ArrayType* t_tvm_crt_func_ptrs =
-        llvm::ArrayType::get(ftype_tvm_backend_packed_c_func_->getPointerTo(), funcs.size());
-    llvm::GlobalVariable* func_registry_ptrs = new llvm::GlobalVariable(
-        *module_, t_tvm_crt_func_ptrs, true, llvm::GlobalValue::InternalLinkage,
-        llvm::ConstantArray::get(t_tvm_crt_func_ptrs, funcs), "_tvm_func_registry_ptrs");
-    uint64_t align = layout.getTypeAllocSize(ftype_tvm_backend_packed_c_func_->getPointerTo());
-#if TVM_LLVM_VERSION >= 100
-    func_registry_ptrs->setAlignment(llvm::Align(align));
-#else
-    func_registry_ptrs->setAlignment(align);
-#endif
-    llvm::GlobalVariable* func_registry = new llvm::GlobalVariable(
-        *module_, t_tvm_crt_func_registry_, true, llvm::GlobalVariable::InternalLinkage,
-        llvm::ConstantStruct::get(
-            t_tvm_crt_func_registry_,
-            {GetConstString(::tvm::target::GenerateFuncRegistryNames(symbols)),
-             func_registry_ptrs}),
-        "_tvm_crt_func_registry");
-    llvm::GlobalVariable* module = new llvm::GlobalVariable(
-        *module_, t_tvm_crt_module_, true, llvm::GlobalValue::InternalLinkage,
-        llvm::ConstantStruct::get(t_tvm_crt_module_, {func_registry}), "_tvm_crt_module");
+void CodeGenCPU::DefineFunctionRegistry(Array<String> func_names) {
+  ICHECK(is_system_lib_) << "Loading of --system-lib modules is yet to be defined for C runtime";
+  Array<String> symbols;
+  std::vector<llvm::Constant*> funcs;
+  for (auto sym : func_names) {
+    symbols.push_back(sym);
+    auto* sym_func =
+        llvm::Function::Create(ftype_tvm_backend_packed_c_func_, llvm::GlobalValue::ExternalLinkage,
+                               sym.operator std::string(), module_.get());
 
-    // Now build TVMSystemLibEntryPoint.
-    llvm::FunctionType* ftype = llvm::FunctionType::get(t_void_p_, {}, false);
-    function_ = llvm::Function::Create(ftype, llvm::Function::ExternalLinkage,
-                                       "TVMSystemLibEntryPoint", module_.get());
-    llvm::BasicBlock* entry_point_entry = llvm::BasicBlock::Create(*ctx_, "entry", function_);
-    builder_->SetInsertPoint(entry_point_entry);
-    builder_->CreateRet(builder_->CreateBitCast(module, t_void_p_));
-  } else {
+    funcs.emplace_back(sym_func);
+  }
+  llvm::ArrayType* t_tvm_crt_func_ptrs =
+      llvm::ArrayType::get(ftype_tvm_backend_packed_c_func_->getPointerTo(), funcs.size());
+  llvm::DataLayout layout(module_.get());
+
+  llvm::GlobalVariable* func_registry_ptrs = new llvm::GlobalVariable(
+      *module_, t_tvm_crt_func_ptrs, true, llvm::GlobalValue::InternalLinkage,
+      llvm::ConstantArray::get(t_tvm_crt_func_ptrs, funcs), "_tvm_func_registry_ptrs");
+
+  uint64_t align = layout.getTypeAllocSize(ftype_tvm_backend_packed_c_func_->getPointerTo());
+#if TVM_LLVM_VERSION >= 100
+  func_registry_ptrs->setAlignment(llvm::Align(align));
+#else
+  func_registry_ptrs->setAlignment(align);
+#endif
+  llvm::GlobalVariable* func_registry = new llvm::GlobalVariable(
+      *module_, t_tvm_crt_func_registry_, true, llvm::GlobalVariable::InternalLinkage,
+      llvm::ConstantStruct::get(
+          t_tvm_crt_func_registry_,
+          {GetConstString(::tvm::target::GenerateFuncRegistryNames(symbols)),
+           llvm::ConstantExpr::getBitCast(func_registry_ptrs,
+                                          ftype_tvm_backend_packed_c_func_->getPointerTo())}),
+      "_tvm_crt_func_registry");
+  llvm::GlobalVariable* module = new llvm::GlobalVariable(
+      *module_, t_tvm_crt_module_, true, llvm::GlobalValue::InternalLinkage,
+      llvm::ConstantStruct::get(t_tvm_crt_module_, {func_registry}), "_tvm_crt_module");
+
+  // Now build TVMSystemLibEntryPoint.
+  llvm::FunctionType* ftype = llvm::FunctionType::get(t_void_p_, {}, false);
+  function_ = llvm::Function::Create(ftype, llvm::Function::ExternalLinkage,
+                                     "TVMSystemLibEntryPoint", module_.get());
+  llvm::BasicBlock* entry_point_entry = llvm::BasicBlock::Create(*ctx_, "entry", function_);
+  builder_->SetInsertPoint(entry_point_entry);
+  builder_->CreateRet(builder_->CreateBitCast(module, t_void_p_));
+}
+
+void CodeGenCPU::AddStartupFunction() {
+  if (!target_c_runtime_) {
     llvm::FunctionType* ftype = llvm::FunctionType::get(t_void_, {}, false);
     function_ = llvm::Function::Create(ftype, llvm::Function::InternalLinkage,
                                        "__tvm_module_startup", module_.get());
@@ -846,7 +866,7 @@ llvm::Value* CodeGenCPU::CreateIntrinsic(const CallNode* op) {
     builder_->SetInsertPoint(new_bb);
     return ConstInt32(-1);
   } else if (op->op.same_as(builtin::tvm_struct_get())) {
-    CHECK_EQ(op->args.size(), 3U);
+    ICHECK_EQ(op->args.size(), 3U);
     int kind = op->args[2].as<IntImmNode>()->value;
     llvm::Value* ref =
         this->CreateStructRefPtr(op->dtype, MakeValue(op->args[0]), MakeValue(op->args[1]), kind);
@@ -856,23 +876,23 @@ llvm::Value* CodeGenCPU::CreateIntrinsic(const CallNode* op) {
       return builder_->CreateLoad(ref);
     }
   } else if (op->op.same_as(builtin::tvm_struct_set())) {
-    CHECK_EQ(op->args.size(), 4U);
+    ICHECK_EQ(op->args.size(), 4U);
     int kind = op->args[2].as<IntImmNode>()->value;
     llvm::Value* value = MakeValue(op->args[3]);
     llvm::Value* ref = this->CreateStructRefPtr(op->args[3].dtype(), MakeValue(op->args[0]),
                                                 MakeValue(op->args[1]), kind);
-    CHECK(kind != builtin::kArrAddr);
+    ICHECK(kind != builtin::kArrAddr);
     if (value->getType()->isPointerTy()) {
       value = builder_->CreatePointerCast(value, ref->getType()->getPointerElementType());
     }
     builder_->CreateStore(value, ref);
     return ConstInt32(0);
   } else if (op->op.same_as(builtin::tvm_stack_alloca())) {
-    CHECK_EQ(op->args.size(), 2U);
+    ICHECK_EQ(op->args.size(), 2U);
     const std::string& type = op->args[0].as<StringImmNode>()->value;
     return WithFunctionEntry([&]() -> llvm::AllocaInst* {
       const int64_t* pval = as_const_int(op->args[1]);
-      CHECK(pval) << "require stack alloca to contain constant value";
+      ICHECK(pval) << "require stack alloca to contain constant value";
       llvm::Value* num = ConstInt32(pval[0]);
       if (type == "shape") {
         return builder_->CreateAlloca(t_tvm_shape_index_, num);
@@ -926,15 +946,15 @@ void CodeGenCPU::VisitStmt_(const AttrStmtNode* op) {
     this->CreateComputeScope(op);
   } else if (tir::attr::IsPragmaKey(op->attr_key)) {
     if (op->attr_key == "pragma_parallel_stride_pattern") {
-      CHECK(parallel_env_.penv != nullptr)
+      ICHECK(parallel_env_.penv != nullptr)
           << "Pragma parallel_stride_pattern only valid in parallel launch";
       parallel_env_.stride_pattern = true;
       this->VisitStmt(op->body);
     } else if (op->attr_key == "pragma_parallel_launch_point") {
       CreateParallelLaunch(op->body, 0);
     } else if (op->attr_key == "pragma_parallel_barrier_when_finish") {
-      CHECK(parallel_env_.penv != nullptr) << "Cannot run barrier without parallel environment";
-      CHECK(!parallel_env_.in_parallel_loop)
+      ICHECK(parallel_env_.penv != nullptr) << "Cannot run barrier without parallel environment";
+      ICHECK(!parallel_env_.in_parallel_loop)
           << "Cannot not place within parallel loop as the workload may differ, "
           << " place it between parallel and parallel_launch_point";
       this->VisitStmt(op->body);
@@ -947,7 +967,7 @@ void CodeGenCPU::VisitStmt_(const AttrStmtNode* op) {
       builder_->CreateCall(bar_callee, {MakeValue(parallel_env_.task_id), parallel_env_.penv});
     } else if (op->attr_key == tir::attr::pragma_import_llvm) {
       const StringImmNode* value = op->value.as<StringImmNode>();
-      CHECK(value != nullptr);
+      ICHECK(value != nullptr);
       this->HandleImport(value->value);
       this->VisitStmt(op->body);
     } else {
@@ -960,22 +980,23 @@ void CodeGenCPU::VisitStmt_(const AttrStmtNode* op) {
 }
 
 void CodeGenCPU::VisitStmt_(const ForNode* op) {
-  CHECK(is_zero(op->min));
-  if (op->for_type == ForType::Serial || op->for_type == ForType::Unrolled) {
+  ICHECK(is_zero(op->min));
+  if (op->kind == ForKind::kSerial || op->kind == ForKind::kUnrolled) {
     CodeGenLLVM::VisitStmt_(op);
-  } else if (op->for_type == ForType::Parallel) {
+  } else if (op->kind == ForKind::kParallel) {
     if (parallel_env_.penv == nullptr) {
-      CreateParallelLaunch(
-          For(op->loop_var, op->min, op->extent, op->for_type, op->device_api, op->body), 0);
+      CreateParallelLaunch(For(op->loop_var, op->min, op->extent, op->kind, op->body,
+                               op->thread_binding, op->annotations),
+                           0);
     } else {
       // already in parallel env.
-      CHECK(parallel_env_.task_id.defined());
-      CHECK(parallel_env_.num_task.defined());
-      CHECK(parallel_env_.penv != nullptr);
+      ICHECK(parallel_env_.task_id.defined());
+      ICHECK(parallel_env_.num_task.defined());
+      ICHECK(parallel_env_.penv != nullptr);
       DataType t = op->extent.dtype();
       PrimExpr num_task = cast(t, parallel_env_.num_task);
       PrimExpr task_id = cast(t, parallel_env_.task_id);
-      CHECK(!parallel_env_.in_parallel_loop)
+      ICHECK(!parallel_env_.in_parallel_loop)
           << "Nested parallel loop is not supported by threadpool, try fuse them instead";
       parallel_env_.in_parallel_loop = true;
       if (parallel_env_.stride_pattern) {
@@ -992,7 +1013,7 @@ void CodeGenCPU::VisitStmt_(const ForNode* op) {
       ++parallel_env_.parallel_loop_count;
     }
   } else {
-    LOG(FATAL) << "cannot handle for type " << op->for_type;
+    LOG(FATAL) << "cannot handle for type " << op->kind;
   }
 }
 

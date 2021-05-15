@@ -21,7 +21,7 @@ from __future__ import absolute_import
 import tvm.topi
 from tvm.runtime import convert
 from tvm.te.hybrid import script
-from tvm.topi.util import nchw_pack_layout, nchw_xc_layout
+from tvm.topi.utils import nchw_pack_layout, nchw_xc_layout
 from ... import op as reg
 
 
@@ -31,10 +31,22 @@ def compute_resize(attrs, inputs, out_type):
     layout = attrs.layout
     method = attrs.method
     coord_trans = attrs.coordinate_transformation_mode
+    rounding_method = attrs.rounding_method
+    bicubic_alpha = attrs.bicubic_alpha
+    bicubic_exclude = attrs.bicubic_exclude
     out_dtype = attrs.out_dtype
     return [
         tvm.topi.image.resize(
-            inputs[0], inputs[1], layout, method, coord_trans, out_dtype, out_type.shape
+            inputs[0],
+            inputs[1],
+            layout,
+            method,
+            coord_trans,
+            rounding_method,
+            bicubic_alpha,
+            bicubic_exclude,
+            out_dtype,
+            out_type.shape,
         )
     ]
 

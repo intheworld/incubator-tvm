@@ -31,7 +31,7 @@
 #include <tvm/runtime/ndarray.h>
 #include <tvm/runtime/object.h>
 
-#include "pattern_util.h"
+#include "pattern_utils.h"
 
 namespace tvm {
 namespace relay {
@@ -75,40 +75,52 @@ TVM_REGISTER_GLOBAL("relay.analysis.check_constant").set_body_typed(ConstantChec
 
 // TODO(tvm-team) consider combine dead-code with constant folder.
 // or make a more powerful partial evaluator.
-class ConstantFolder : public ExprMutator {
+class ConstantFolder : public MixedModeMutator {
  public:
   explicit ConstantFolder(IRModule module)
       : module_(module),
         device_copy_op_(Op::Get("device_copy")),
         shape_of_op_(Op::Get("shape_of")),
         vm_shape_of_op_(Op::Get("vm.shape_of")),
-        invoke_tvm_op_(Op::Get("vm.invoke_tvm_op")),
-        shape_func_op_(Op::Get("vm.shape_func")),
-        alloc_tensor_op_(Op::Get("memory.alloc_tensor")),
-        alloc_storage_op_(Op::Get("memory.alloc_storage")),
         cast_op_(Op::Get("cast")),
         ndarray_size_op_(Op::Get("ndarray_size")) {}
 
+  using MixedModeMutator::VisitExpr_;
+
   Expr VisitExpr_(const LetNode* op) final {
-    Expr value = this->Mutate(op->value);
-    if (value.as<ConstantNode>()) {
-      memo_[op->var] = value;
-      return this->Mutate(op->body);
-    } else {
-      Var var = Downcast<Var>(this->Mutate(op->var));
-      Expr body = this->Mutate(op->body);
-      if (var.same_as(op->var) && value.same_as(op->value) && body.same_as(op->body)) {
-        return GetRef<Expr>(op);
+    auto pre_visit = [this](const LetNode* op) {
+      // Rely on the Memoizer to cache pre-visit values
+      Expr value = this->Mutate(op->value);
+      if (value.as<ConstantNode>()) {
+        this->memo_[op->var] = value;
       } else {
-        return Let(var, value, body);
+        this->Mutate(op->var);
       }
-    }
+    };
+    auto post_visit = [this](const LetNode* op) {
+      Expr expr = GetRef<Expr>(op);
+      // Rely on the Memoizer to cache pre-visit values
+      Expr value = this->Mutate(op->value);
+      if (value.as<ConstantNode>()) {
+        this->memo_[expr] = this->Mutate(op->body);
+      } else {
+        Var var = Downcast<Var>(this->Mutate(op->var));
+        Expr body = this->Mutate(op->body);
+        if (var.same_as(op->var) && value.same_as(op->value) && body.same_as(op->body)) {
+          this->memo_[expr] = expr;
+        } else {
+          this->memo_[expr] = Let(var, value, body);
+        }
+      }
+    };
+    ExpandANormalForm(op, pre_visit, post_visit);
+    return memo_[GetRef<Expr>(op)];
   }
 
   bool inside_primitive = false;
   Expr VisitExpr_(const FunctionNode* op) final {
     if (op->HasNonzeroAttr(attr::kPrimitive)) {
-      CHECK_EQ(inside_primitive, false);
+      ICHECK_EQ(inside_primitive, false);
       inside_primitive = true;
       auto ret = ExprMutator::VisitExpr_(op);
       inside_primitive = false;
@@ -118,41 +130,50 @@ class ConstantFolder : public ExprMutator {
     }
   }
 
-  Expr VisitExpr_(const CallNode* call) final {
+  Expr VisitExpr_(const IfNode* op) final {
+    auto new_cond = ExprMutator::VisitExpr(op->cond);
+    if (auto const_cond = new_cond.as<ConstantNode>()) {
+      if (reinterpret_cast<uint8_t*>(const_cond->data->data)[0]) {
+        return ExprMutator::VisitExpr(op->true_branch);
+      } else {
+        return ExprMutator::VisitExpr(op->false_branch);
+      }
+    }
+    return ExprMutator::VisitExpr_(op);
+  }
+
+  Expr Rewrite_(const CallNode* call, const Expr& post) final {
     if (inside_primitive) {
       return GetRef<Expr>(call);
     }
     static auto op_stateful = Op::GetAttrMap<TOpIsStateful>("TOpIsStateful");
 
-    std::unordered_set<std::string> skip_list{"zeros_like", "ones_like", "full_like", "full"};
-
     auto origin_args = call->args;
-    Expr res = ExprMutator::VisitExpr_(call);
-    call = res.as<CallNode>();
+    call = post.as<CallNode>();
     // We don't constant fold function with zero arguments.
     // This is a heuristic that is useful.
     // For example it is harmful to fold ones(shape=(4, 5)).
-    if (call->args.size() == 0) return res;
+    if (call->args.size() == 0) return post;
     const OpNode* op = call->op.as<OpNode>();
-    if (op == nullptr) return res;
-    if (skip_list.count(op->name)) {
-      return res;
-    }
+    if (op == nullptr) return post;
     // skip stateful ops.
-    if (op_stateful.get(GetRef<Op>(op), false)) return res;
+    if (op_stateful.get(GetRef<Op>(op), false)) return post;
     // Try to evaluate shape_of op
     if (call->op == shape_of_op_ || call->op == vm_shape_of_op_) {
-      return EvaluateShapeOf(res, origin_args, call->attrs);
+      return EvaluateShapeOf(post, origin_args, call->attrs);
     }
 
     if (call->op == ndarray_size_op_) {
-      return EvaluateNdarraySize(res, origin_args, call->attrs);
+      return EvaluateNdarraySize(post, origin_args, call->attrs);
     }
 
     // We should think about potentially constant evaluation over these ops too.
-    if (call->op == invoke_tvm_op_ || call->op == shape_func_op_ || call->op == alloc_tensor_op_ ||
-        call->op == alloc_storage_op_ || call->op == device_copy_op_) {
-      return GetRef<Call>(call);
+    static auto fnoncomputational = Op::GetAttrMap<TNonComputational>("TNonComputational");
+    if (const auto* call_node = call->op.as<OpNode>()) {
+      Op op = GetRef<Op>(call_node);
+      if ((fnoncomputational.count(op) && fnoncomputational[op]) || (call->op == device_copy_op_)) {
+        return GetRef<Call>(call);
+      }
     }
 
     bool all_const_args = true;
@@ -162,19 +183,18 @@ class ConstantFolder : public ExprMutator {
       }
     }
     if (all_const_args) {
-      return ConstEvaluate(res);
+      return ConstEvaluate(post);
     } else {
-      return res;
+      return post;
     }
   }
 
-  Expr VisitExpr_(const TupleGetItemNode* op) final {
-    Expr res = ExprMutator::VisitExpr_(op);
-    op = res.as<TupleGetItemNode>();
+  Expr Rewrite_(const TupleGetItemNode* op, const Expr& post) final {
+    op = post.as<TupleGetItemNode>();
     if (const auto* tuple = op->tuple.as<TupleNode>()) {
       return tuple->fields[op->index];
     } else {
-      return res;
+      return post;
     }
   }
 
@@ -188,10 +208,6 @@ class ConstantFolder : public ExprMutator {
   const Op& device_copy_op_;
   const Op& shape_of_op_;
   const Op& vm_shape_of_op_;
-  const Op& invoke_tvm_op_;
-  const Op& shape_func_op_;
-  const Op& alloc_tensor_op_;
-  const Op& alloc_storage_op_;
   const Op& cast_op_;
   const Op& ndarray_size_op_;
 
@@ -199,9 +215,6 @@ class ConstantFolder : public ExprMutator {
   Expr ObjectToExpr(const ObjectRef& value) {
     if (value->IsInstance<runtime::NDArray::ContainerType>()) {
       auto nd_array = Downcast<runtime::NDArray>(value);
-      for (auto dim : nd_array.Shape()) {
-        CHECK_GT(dim, 0) << "invalid dimension after constant eval";
-      }
       return Constant(nd_array);
     } else if (const auto* val = value.as<runtime::ADTObj>()) {
       runtime::ADT adt = GetRef<runtime::ADT>(val);
@@ -235,16 +248,16 @@ class ConstantFolder : public ExprMutator {
     expr = expr.as<FunctionNode>() == nullptr ? entry_func->body : entry_func;
 
     using tvm::transform::PassContext;
-    DLContext ctx;
-    ctx.device_type = kDLCPU;
-    ctx.device_id = 0;
+    Device dev;
+    dev.device_type = kDLCPU;
+    dev.device_id = 0;
     Target target = Target("llvm");
     // use a fresh build context
     // in case we are already in a build context.
     // needed for both execution and creation(due to JIT)
     With<PassContext> fresh_build_ctx(PassContext::Create());
 
-    FInterpreter executor = CreateInterpreter(mod, ctx, target);
+    FInterpreter executor = CreateInterpreter(mod, dev, target);
     return ObjectToExpr(executor(expr));
   }
 
@@ -253,7 +266,7 @@ class ConstantFolder : public ExprMutator {
   Expr EvaluateShapeOf(Expr expr, Array<Expr> args, Attrs attrs) {
     Expr input = args[0];
     const auto* param = attrs.as<ShapeOfAttrs>();
-    CHECK(param != nullptr);
+    ICHECK(param != nullptr);
 
     tvm::Array<IndexExpr> ishape;
     if (auto opt = GetConstantShape(input)) {
@@ -263,17 +276,17 @@ class ConstantFolder : public ExprMutator {
     }
 
     // Get the constant shape
-    DLContext ctx;
-    ctx.device_type = kDLCPU;
-    ctx.device_id = 0;
+    Device dev;
+    dev.device_type = kDLCPU;
+    dev.device_id = 0;
     runtime::NDArray value;
     DLDataType cdtype = DataType::Int(32);
     if (ishape.size() == 0) {
-      value = runtime::NDArray::Empty({}, cdtype, ctx);
+      value = runtime::NDArray::Empty({}, cdtype, dev);
     } else {
-      CHECK_NE(ishape.size(), 0);
+      ICHECK_NE(ishape.size(), 0);
       std::vector<int64_t> cshape = {static_cast<int64_t>(ishape.size())};
-      value = runtime::NDArray::Empty(cshape, cdtype, ctx);
+      value = runtime::NDArray::Empty(cshape, cdtype, dev);
       int32_t* dims = static_cast<int32_t*>(value->data);
       using ::tvm::tir::IntImmNode;
       for (size_t i = 0; i < ishape.size(); ++i) {
@@ -288,7 +301,7 @@ class ConstantFolder : public ExprMutator {
     Constant shape = Downcast<Constant>(ObjectToExpr(value));
 
     if (shape->data.Shape().size() == 0 && GetScalarFromConstant<int32_t>(shape) == 0) {
-      auto ndarray = runtime::NDArray::Empty({}, cdtype, ctx);
+      auto ndarray = runtime::NDArray::Empty({}, cdtype, dev);
       shape = Constant(ndarray);
     }
 
@@ -300,7 +313,7 @@ class ConstantFolder : public ExprMutator {
   Expr EvaluateNdarraySize(Expr expr, Array<Expr> args, Attrs attrs) {
     Expr input = args[0];
     const auto* param = attrs.as<NdarraySizeAttrs>();
-    CHECK(param != nullptr);
+    ICHECK(param != nullptr);
 
     tvm::Array<IndexExpr> ishape;
     if (auto opt = GetConstantShape(input)) {
@@ -310,12 +323,12 @@ class ConstantFolder : public ExprMutator {
     }
 
     // Get the constant size
-    DLContext ctx;
-    ctx.device_type = kDLCPU;
-    ctx.device_id = 0;
+    Device dev;
+    dev.device_type = kDLCPU;
+    dev.device_id = 0;
     runtime::NDArray value;
     DLDataType cdtype = DataType::Int(32);
-    value = runtime::NDArray::Empty({}, cdtype, ctx);
+    value = runtime::NDArray::Empty({}, cdtype, dev);
     int32_t* data = static_cast<int32_t*>(value->data);
     if (ishape.size() == 0) {
       *data = 0;
@@ -360,6 +373,8 @@ class ConstantFolder : public ExprMutator {
 Expr FoldConstant(const Expr& expr, const IRModule& mod) {
   return ConstantFolder(mod).Mutate(expr);
 }
+
+TVM_REGISTER_GLOBAL("relay._transform.FoldConstantExpr").set_body_typed(FoldConstant);
 
 namespace transform {
 

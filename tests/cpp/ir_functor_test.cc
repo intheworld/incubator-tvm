@@ -19,10 +19,14 @@
 
 #include <dmlc/logging.h>
 #include <gtest/gtest.h>
+#include <tvm/ir/module.h>
 #include <tvm/node/functor.h>
+#include <tvm/relay/function.h>
+#include <tvm/tir/analysis.h>
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/expr.h>
 #include <tvm/tir/expr_functor.h>
+#include <tvm/tir/function.h>
 #include <tvm/tir/op.h>
 #include <tvm/tir/stmt_functor.h>
 
@@ -35,8 +39,8 @@ TEST(IRF, Basic) {
   NodeFunctor<int(const ObjectRef& n, int b)> f;
   f.set_dispatch<VarNode>([](const ObjectRef& n, int b) { return b; });
   f.set_dispatch<AddNode>([](const ObjectRef& n, int b) { return b + 2; });
-  CHECK_EQ(f(x, 2), 2);
-  CHECK_EQ(f(z, 2), 4);
+  ICHECK_EQ(f(x, 2), 2);
+  ICHECK_EQ(f(z, 2), 4);
 }
 
 TEST(IRF, CountVar) {
@@ -49,7 +53,56 @@ TEST(IRF, CountVar) {
   tir::PostOrderVisit(z, [&n_var](const ObjectRef& n) {
     if (n.as<VarNode>()) ++n_var;
   });
-  CHECK_EQ(n_var, 2);
+  ICHECK_EQ(n_var, 2);
+}
+
+TEST(IRF, VisitPrimFuncs) {
+  using namespace tvm;
+  using namespace tvm::tir;
+  PrimFunc prim_func(/*params=*/{}, /*body=*/Evaluate(Integer(0)));
+  relay::Function relay_func(/*params=*/{}, /*body=*/relay::Expr(nullptr),
+                             /*ret_type=*/relay::Type{nullptr}, /*ty_params=*/{});
+  IRModule mod({
+      {GlobalVar("main"), prim_func},
+      {GlobalVar("main2"), relay_func},
+  });
+  int n_visited = 0;
+  VisitPrimFuncs(mod, [&](const PrimFuncNode* func) { ++n_visited; });
+  ASSERT_EQ(n_visited, 1);
+}
+
+TEST(IRF, PreOrderVisit) {
+  using namespace tvm;
+  using namespace tvm::tir;
+  Stmt init = IfThenElse(const_true(), Evaluate(Integer(0)), Evaluate(Integer(0)));
+  Stmt body = Evaluate(Integer(1));
+  Block block(/*iter_vars=*/{}, /*reads=*/{},
+              /*writes=*/{}, /*name_hint=*/"block", /*body=*/body,
+              /*init=*/init);
+  bool init_visited = false;
+  bool stopped_at_if = true;
+  bool body_visited = false;
+  PreOrderVisit(block, [&](const ObjectRef& n) -> bool {
+    if (n->IsInstance<IfThenElseNode>()) {
+      init_visited = true;
+      return false;
+    }
+    if (const auto* eval = n.as<EvaluateNode>()) {
+      if (const auto* int_imm = eval->value.as<IntImmNode>()) {
+        if (int_imm->value == 0) {
+          stopped_at_if = false;
+        } else if (int_imm->value == 1) {
+          body_visited = true;
+        } else {
+          LOG(FATAL) << "Unreachable";
+        }
+      }
+    }
+    return true;
+  });
+  ASSERT_EQ(init_visited, true);
+  ASSERT_EQ(stopped_at_if, true);
+  ASSERT_EQ(body_visited, true);
 }
 
 TEST(IRF, ExprTransform) {
@@ -67,12 +120,12 @@ TEST(IRF, ExprTransform) {
     }
   };
   MyExprFunctor f;
-  CHECK_EQ(f(x, 2), 2);
-  CHECK_EQ(f(z, 2), 3);
+  ICHECK_EQ(f(x, 2), 2);
+  ICHECK_EQ(f(z, 2), 3);
   try {
     f(z - 1, 2);
     LOG(FATAL) << "should fail";
-  } catch (dmlc::Error) {
+  } catch (Error&) {
   }
 }
 
@@ -97,7 +150,7 @@ TEST(IRF, ExprVisit) {
   };
   MyVisitor v;
   v.VisitStmt(Evaluate(z));
-  CHECK_EQ(v.count, 1);
+  ICHECK_EQ(v.count, 1);
 }
 
 TEST(IRF, StmtVisitor) {
@@ -114,11 +167,31 @@ TEST(IRF, StmtVisitor) {
   auto fmaketest = [&]() {
     auto z = x + 1;
     Stmt body = Evaluate(z);
-    Var buffer("b", DataType::Handle());
-    return Allocate(buffer, DataType::Float(32), {z, z}, const_true(), body);
+    DataType dtype = DataType::Float(32);
+    Var buffer("b", PointerType(PrimType(dtype)));
+    return Allocate(buffer, dtype, {z, z}, const_true(), body);
   };
   v(fmaketest());
-  CHECK_EQ(v.count, 3);
+  ICHECK_EQ(v.count, 3);
+
+  {
+    // tests for block and block_realize
+    Stmt body = fmaketest();
+    DataType dtype = DataType::Float(32);
+    Var buf_var("b", PointerType(PrimType(dtype)));
+    Buffer buffer = decl_buffer({16});
+    BufferRegion buffer_region(buffer, {Range::FromMinExtent(x + 1, 1)});
+    MatchBufferRegion match_buffer_region(decl_buffer({1}), buffer_region);
+
+    // construct block and block_realize
+    Block block =
+        Block({}, {buffer_region}, {buffer_region}, "block", body, body, {}, {match_buffer_region});
+    Stmt block_realize = BlockRealize({}, const_true(), block);
+
+    v.count = 0;
+    v(block_realize);
+    ICHECK_EQ(v.count, 9);
+  }
 }
 
 TEST(IRF, StmtMutator) {
@@ -140,8 +213,9 @@ TEST(IRF, StmtMutator) {
   auto fmakealloc = [&]() {
     auto z = x + 1;
     Stmt body = Evaluate(z);
-    Var buffer("b", DataType::Handle());
-    return Allocate(buffer, DataType::Float(32), {1, z}, const_true(), body);
+    DataType dtype = DataType::Float(32);
+    Var buffer("b", PointerType(PrimType(dtype)));
+    return Allocate(buffer, dtype, {1, z}, const_true(), body);
   };
 
   auto fmakeif = [&]() {
@@ -159,14 +233,14 @@ TEST(IRF, StmtMutator) {
     Array<Stmt> arr{std::move(body), body2, body2};
     auto* arrptr = arr.get();
     arr.MutateByApply([&](Stmt s) { return v(std::move(s)); });
-    CHECK(arr.get() == arrptr);
+    ICHECK(arr.get() == arrptr);
     // inplace update body
-    CHECK(arr[0].as<AllocateNode>()->extents[1].same_as(x));
-    CHECK(arr[0].as<AllocateNode>()->extents.get() == extentptr);
+    ICHECK(arr[0].as<AllocateNode>()->extents[1].same_as(x));
+    ICHECK(arr[0].as<AllocateNode>()->extents.get() == extentptr);
     // copy because there is additional refs
-    CHECK(!arr[0].as<AllocateNode>()->body.same_as(bref));
-    CHECK(arr[0].as<AllocateNode>()->body.as<EvaluateNode>()->value.same_as(x));
-    CHECK(bref.as<EvaluateNode>()->value.as<AddNode>());
+    ICHECK(!arr[0].as<AllocateNode>()->body.same_as(bref));
+    ICHECK(arr[0].as<AllocateNode>()->body.as<EvaluateNode>()->value.same_as(x));
+    ICHECK(bref.as<EvaluateNode>()->value.as<AddNode>());
   }
   {
     Array<Stmt> arr{fmakealloc()};
@@ -174,29 +248,29 @@ TEST(IRF, StmtMutator) {
     Array<Stmt> arr2 = arr;
     auto* arrptr = arr.get();
     arr.MutateByApply([&](Stmt s) { return v(std::move(s)); });
-    CHECK(arr.get() != arrptr);
-    CHECK(arr[0].as<AllocateNode>()->extents[1].same_as(x));
-    CHECK(!arr2[0].as<AllocateNode>()->extents[1].same_as(x));
+    ICHECK(arr.get() != arrptr);
+    ICHECK(arr[0].as<AllocateNode>()->extents[1].same_as(x));
+    ICHECK(!arr2[0].as<AllocateNode>()->extents[1].same_as(x));
     // mutate but no content change.
     arr2 = arr;
     arr.MutateByApply([&](Stmt s) { return v(std::move(s)); });
-    CHECK(arr2.get() == arr.get());
+    ICHECK(arr2.get() == arr.get());
   }
   {
     Array<Stmt> arr{fmakeif()};
     arr.MutateByApply([&](Stmt s) { return v(std::move(s)); });
-    CHECK(arr[0].as<IfThenElseNode>()->else_case.as<EvaluateNode>()->value.same_as(x));
+    ICHECK(arr[0].as<IfThenElseNode>()->else_case.as<EvaluateNode>()->value.same_as(x));
     // mutate but no content change.
     auto arr2 = arr;
     arr.MutateByApply([&](Stmt s) { return v(std::move(s)); });
-    CHECK(arr2.get() == arr.get());
+    ICHECK(arr2.get() == arr.get());
   }
 
   {
     auto body =
         Evaluate(Call(DataType::Int(32), builtin::call_extern(), {StringImm("xyz"), x + 1}));
     auto res = v(std::move(body));
-    CHECK(res.as<EvaluateNode>()->value.as<CallNode>()->args[1].same_as(x));
+    ICHECK(res.as<EvaluateNode>()->value.as<CallNode>()->args[1].same_as(x));
   }
   {
     Stmt body = fmakealloc();
@@ -209,9 +283,9 @@ TEST(IRF, StmtMutator) {
     body = SeqStmt({body, body2});
     body = v(std::move(body));
     // the seq get flattened
-    CHECK(body.as<SeqStmtNode>()->size() == 3);
-    CHECK(body.as<SeqStmtNode>()->seq[0].as<AllocateNode>()->extents.get() == extentptr);
-    CHECK(body.as<SeqStmtNode>()->seq[1].get() == ref2);
+    ICHECK(body.as<SeqStmtNode>()->size() == 3);
+    ICHECK(body.as<SeqStmtNode>()->seq[0].as<AllocateNode>()->extents.get() == extentptr);
+    ICHECK(body.as<SeqStmtNode>()->seq[1].get() == ref2);
   }
 
   {
@@ -225,7 +299,29 @@ TEST(IRF, StmtMutator) {
     body = SeqStmt({body, body2});
     body = v(std::move(body));
     // the seq get flattened
-    CHECK(body.as<SeqStmtNode>()->seq[0].as<AllocateNode>()->extents.get() != extentptr);
+    ICHECK(body.as<SeqStmtNode>()->seq[0].as<AllocateNode>()->extents.get() != extentptr);
+  }
+
+  {
+    // tests for block and block_realize
+    Stmt body = fmakealloc();
+    DataType dtype = DataType::Float(32);
+    Var buf_var("b", PointerType(PrimType(dtype)));
+    Buffer buffer = decl_buffer({16});
+    BufferRegion buffer_region(buffer, {Range::FromMinExtent(x + 1, 1)});
+    MatchBufferRegion match_buffer_region(decl_buffer({1}), buffer_region);
+    // construct block and block_realize
+    Block block =
+        Block({}, {buffer_region}, {buffer_region}, "block", body, body, {}, {match_buffer_region});
+    Stmt block_realize = BlockRealize({}, const_true(), block);
+    body = v(std::move(block_realize));
+    // the body should be changed
+    Block new_block = body.as<BlockRealizeNode>()->block;
+    ICHECK(new_block->body.as<AllocateNode>()->extents[1].same_as(x));
+    ICHECK(new_block->init.as<AllocateNode>()->extents[1].same_as(x));
+    ICHECK(new_block->reads[0]->region[0]->min.same_as(x));
+    ICHECK(new_block->writes[0]->region[0]->min.same_as(x));
+    ICHECK(new_block->match_buffers[0]->source->region[0]->min.same_as(x));
   }
 }
 

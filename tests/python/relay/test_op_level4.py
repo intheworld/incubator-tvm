@@ -49,8 +49,8 @@ def test_binary_op():
             ref_res = ref(x_data, y_data)
             func = relay.Function([x, y], z)
 
-            for target, ctx in tvm.testing.enabled_targets():
-                intrp = relay.create_executor("graph", ctx=ctx, target=target)
+            for target, dev in tvm.testing.enabled_targets():
+                intrp = relay.create_executor("graph", device=dev, target=target)
                 op_res = intrp.evaluate(func)(x_data, y_data)
                 tvm.testing.assert_allclose(op_res.asnumpy(), ref_res)
 
@@ -87,8 +87,8 @@ def test_cmp_type():
             ref_res = ref(x_data, y_data)
             func = relay.Function([x, y], z)
 
-            for target, ctx in tvm.testing.enabled_targets():
-                intrp = relay.create_executor("graph", ctx=ctx, target=target)
+            for target, dev in tvm.testing.enabled_targets():
+                intrp = relay.create_executor("graph", device=dev, target=target)
                 op_res = intrp.evaluate(func)(x_data, y_data)
                 tvm.testing.assert_allclose(op_res.asnumpy(), ref_res)
 
@@ -112,8 +112,8 @@ def test_binary_int_broadcast_1():
             func = relay.Function([x, y], z)
             ref_res = ref(x_data, y_data)
 
-            for target, ctx in tvm.testing.enabled_targets():
-                intrp = relay.create_executor("graph", ctx=ctx, target=target)
+            for target, dev in tvm.testing.enabled_targets():
+                intrp = relay.create_executor("graph", device=dev, target=target)
                 op_res = intrp.evaluate(func)(x_data, y_data)
                 tvm.testing.assert_allclose(op_res.asnumpy(), ref_res)
 
@@ -137,8 +137,8 @@ def test_binary_int_broadcast_2():
             func = relay.Function([x, y], z)
             ref_res = ref(x_data, y_data)
 
-            for target, ctx in tvm.testing.enabled_targets():
-                intrp = relay.create_executor("graph", ctx=ctx, target=target)
+            for target, dev in tvm.testing.enabled_targets():
+                intrp = relay.create_executor("graph", device=dev, target=target)
                 op_res = intrp.evaluate(func)(x_data, y_data)
                 tvm.testing.assert_allclose(op_res.asnumpy(), ref_res)
 
@@ -146,41 +146,76 @@ def test_binary_int_broadcast_2():
 @tvm.testing.uses_gpu
 def test_where():
     def run(func, inputs, ref_res):
-        for target, ctx in tvm.testing.enabled_targets():
+        for target, dev in tvm.testing.enabled_targets():
             for kind in ["graph", "debug"]:
-                intrp = relay.create_executor(kind, ctx=ctx, target=target)
+                intrp = relay.create_executor(kind, device=dev, target=target)
                 op_res = intrp.evaluate(func)(*inputs)
                 tvm.testing.assert_allclose(op_res.asnumpy(), ref_res, rtol=1e-5)
 
-    shape = (3, 4)
+    def verify(x_np, y_np, cond_np):
+        ref_res = np.where(cond_np, x_np, y_np)
+
+        args = []
+        args_np = []
+        vs = []
+
+        cond = relay.var("cond", relay.TensorType(cond_np.shape, "bool"))
+
+        args.append(cond)
+        args_np.append(cond_np)
+
+        for v_name, v_np in [("x", x_np), ("y", y_np)]:
+            if len(v_np.shape) == 0:
+                v = relay.const(v_np.item())
+            else:
+                v = relay.var(v_name, relay.TensorType(v_np.shape, dtype))
+                args.append(v)
+                args_np.append(v_np)
+            vs.append(v)
+
+        z = relay.where(cond, vs[0], vs[1])
+
+        func = relay.Function(args, z)
+
+        run(func, args_np, ref_res)
+
     dtype = "float32"
-    cond = relay.var("cond", relay.TensorType(shape, dtype))
-    x = relay.var("x", relay.TensorType(shape, dtype))
-    y = relay.var("y", relay.TensorType(shape, dtype))
-    z = relay.where(cond, x, y)
-    zz = run_infer_type(z)
-    assert zz.checked_type == relay.TensorType(shape, dtype)
 
-    func = relay.Function([cond, x, y], z)
-    condition = np.random.uniform(low=-1, high=1, size=shape).astype(dtype)
-    x = np.random.uniform(size=shape).astype(dtype)
-    y = np.random.uniform(size=shape).astype(dtype)
-    ref_res = np.where(condition, x, y)
+    x_np = np.random.uniform(size=(3, 4)).astype(dtype)
+    y_np = np.random.uniform(size=(3, 4)).astype(dtype)
+    cond_np = np.random.uniform(low=-1, high=1, size=(3, 4)) > 0
 
-    run(func, [condition, x, y], ref_res)
+    verify(x_np, y_np, cond_np)
 
-    x = relay.const(1)
-    y = relay.const(-1)
-    shape = (3,)
-    dtype = "float32"
-    cond = relay.var("cond", relay.TensorType(shape, "bool"))
-    z = relay.where(cond, x, y)
+    x_np = np.array(1.0, dtype)
+    y_np = np.array(-1.0, dtype)
+    cond_np = np.array([1, 0, 1], dtype=np.bool)
 
-    func = relay.Function([cond], z)
-    condition = np.array([1, 0, 1], dtype=np.bool)
-    ref_res = np.where(condition, 1, -1)
+    verify(x_np, y_np, cond_np)
 
-    run(func, [condition], ref_res)
+    x_np = np.arange(10).astype(dtype)
+    y_np = 10 * x_np
+    cond_np = x_np < 5
+
+    verify(x_np, y_np, cond_np)
+
+    x_np = np.array([[1, 2], [3, 4]], dtype)
+    y_np = np.array([[5, 6], [7, 8]], dtype)
+    cond_np = np.array([[1], [0]], dtype=np.bool)
+
+    verify(x_np, y_np, cond_np)
+    verify(x_np, y_np, cond_np.T)
+
+    x_np = np.random.randn(1, 12, 8, 8).astype(dtype)
+    y_np = np.array(-1.0, dtype)
+    cond_np = np.random.randn(1, 1, 8, 8) > 0
+
+    verify(x_np, y_np, cond_np)
+
+    x_np, y_np = np.ogrid[:3, :4]
+    cond_np = np.where(x_np < y_np, x_np, 10 + y_np).astype(np.bool)
+
+    verify(x_np.astype(dtype), y_np.astype(dtype), cond_np)
 
 
 def verify_reduce(funcs, data, axis, keepdims, exclude, output, dtype="float32"):
@@ -222,9 +257,9 @@ def verify_reduce(funcs, data, axis, keepdims, exclude, output, dtype="float32")
             return
         ref_res = ref_func(x_data + 0, axis=axis, keepdims=keepdims)
 
-    for target, ctx in tvm.testing.enabled_targets():
-        intrp1 = relay.create_executor("graph", ctx=ctx, target=target)
-        intrp2 = relay.create_executor("debug", ctx=ctx, target=target)
+    for target, dev in tvm.testing.enabled_targets():
+        intrp1 = relay.create_executor("graph", device=dev, target=target)
+        intrp2 = relay.create_executor("debug", device=dev, target=target)
         op_res1 = intrp1.evaluate(func)(x_data)
         tvm.testing.assert_allclose(op_res1.asnumpy(), ref_res, rtol=1e-5)
         op_res2 = intrp2.evaluate(func)(x_data)
@@ -316,9 +351,9 @@ def verify_mean_var_std(funcs, shape, axis, keepdims):
     ref_mean = np.mean(x_data, axis=axis, dtype=dtype, keepdims=keepdims)
     ref_res = ref_func(x_data, axis=axis, dtype=dtype, keepdims=keepdims)
 
-    for target, ctx in tvm.testing.enabled_targets():
-        intrp1 = relay.create_executor("graph", ctx=ctx, target=target)
-        intrp2 = relay.create_executor("debug", ctx=ctx, target=target)
+    for target, dev in tvm.testing.enabled_targets():
+        intrp1 = relay.create_executor("graph", device=dev, target=target)
+        intrp2 = relay.create_executor("debug", device=dev, target=target)
         op_res1 = intrp1.evaluate(func)(x_data)
         tvm.testing.assert_allclose(op_res1[0].asnumpy(), ref_mean, rtol=1e-5)
         tvm.testing.assert_allclose(op_res1[1].asnumpy(), ref_res, rtol=1e-5)
@@ -370,8 +405,8 @@ def test_strided_slice():
 
         if not test_ref:
             return
-        for target, ctx in tvm.testing.enabled_targets():
-            intrp = relay.create_executor("graph", ctx=ctx, target=target)
+        for target, dev in tvm.testing.enabled_targets():
+            intrp = relay.create_executor("graph", device=dev, target=target)
             op_res = intrp.evaluate(func)(x_data)
             tvm.testing.assert_allclose(op_res.asnumpy(), ref_res)
 
@@ -392,14 +427,18 @@ def test_strided_slice():
     verify((3, 4, 3), [1, 1], [4, 4, 3], None, (2, 3, 3))
     verify((3, 4, 3), [1, -1, 0], [4, -5, 3], [2, -1, 1], (1, 4, 3))
     verify((3, 4, 3), [1, -1, 0], [2, -3, 3], [1, -1, 1], (1, 2, 3))
+    # Test backwards slicing.
+    verify((3, 4, 3), [-1, -1, -1], [-5, -5, -5], [-1, -1, -1], (3, 4, 3))
+    # Test slicing with overlarge indices.
+    verify((3, 4, 3), [0, 0, 0], [np.iinfo(np.int64).max] * 3, [1, 1, 1], (3, 4, 3))
+    # Test slice mode.
     verify(
         (3, 4, 3), [1, 0, 0], [3, -1, 3], [1, 1, 1], (2, 4, 3), slice_mode="size", test_ref=False
     )
     verify((3, 4, 3), [1, 0, 0], [-1, 2, 3], [1, 1, 1], (2, 2, 3), slice_mode="size", test_ref=True)
 
 
-# TODO(mbrookhart): enable once vm supports heterogenous execution
-# @tvm.testing.uses_gpu
+@tvm.testing.uses_gpu
 def test_dyn_strided_slice():
     def verify(dshape, begin, end, strides, output, slice_mode="end", test_ref=True, dtype="int32"):
         ndim = len(dshape)
@@ -424,13 +463,12 @@ def test_dyn_strided_slice():
 
         if not test_ref:
             return
-        for target, ctx in tvm.testing.enabled_targets():
+        for target, dev in tvm.testing.enabled_targets():
             mod = tvm.ir.IRModule.from_expr(func)
-            intrp = relay.create_executor("vm", mod=mod, ctx=ctx, target=target)
+            intrp = relay.create_executor("vm", mod=mod, device=dev, target=target)
             op_res = intrp.evaluate()(x_data)
             tvm.testing.assert_allclose(op_res.asnumpy(), ref_res)
 
-    verify((1, 3, 10, 10), [0, 0, 0, 0], [-1, 3, 10, 10], [1], (0, 3, 10, 10), dtype="int64")
     verify(
         (1, 224, 224, 3),
         [0, 20, 20, 0],
@@ -477,8 +515,8 @@ def test_strided_set():
         x_data = np.random.uniform(size=dshape).astype("float32")
         v_data = np.random.uniform(size=vshape).astype("float32")
         ref_res = tvm.topi.testing.strided_set_python(x_data, v_data, begin, end, strides)
-        for target, ctx in tvm.testing.enabled_targets():
-            intrp = relay.create_executor("graph", ctx=ctx, target=target)
+        for target, dev in tvm.testing.enabled_targets():
+            intrp = relay.create_executor("graph", device=dev, target=target)
             op_res = intrp.evaluate(func)(x_data, v_data)
             tvm.testing.assert_allclose(op_res.asnumpy(), ref_res)
 

@@ -16,7 +16,8 @@
 # under the License.
 # pylint: disable=invalid-name, too-many-arguments, too-many-nested-blocks
 """Scatter operator"""
-from tvm.te import hybrid
+from ..tir import decl_buffer, ir_builder, AssertStmt, StringImm, Evaluate
+from ..te import extern, hybrid
 
 
 @hybrid.script
@@ -196,3 +197,130 @@ def scatter(data, indices, updates, axis=0):
     if len(data.shape) == 4:
         return _scatter_4d(data, indices, updates, axis)
     raise ValueError("scatter only support for 1-4 dimensions")
+
+
+def _verify_scatter_nd_inputs(data, indices, updates):
+    mdim = int(indices.shape[0])
+    assert mdim <= len(data.shape), (
+        f"The first dimension of the indices ({mdim}) must be less than or equal to "
+        f"the length of the shape of the output ({len(shape)})."
+    )
+    for i in range(len(indices.shape) - 1):
+        assert indices.shape[i + 1] == updates.shape[i], (
+            f"Dimension of indices[{i+1}] ({indices.shape[i+1]}) must equal dimension of "
+            f"updates[{i}] ({updates.shape[i]})."
+        )
+    for i in range(mdim, len(data.shape)):
+        data_ind = i - mdim + len(indices.shape) - 1
+        assert updates.shape[data_ind] == data.shape[i], (
+            f"Dimension of updates[{data_ind}] ({updates.shape[data_ind]}) must equal dimension "
+            f"of out_shape[{i}] ({data.shape[i]})."
+        )
+
+    assert (
+        "int" in indices.dtype
+    ), f"Indices must be a tensor of integers, but its elements are {indices.dtype}."
+
+
+def scatter_nd(data, indices, updates, mode):
+    """Scatter elements from a n-dimension array.
+
+    Given updates with shape (Y_0, ..., Y_{K-1}, X_M, ..., X_{N-1}), indices with shape
+    (M, Y_0, ..., Y_{K-1}), and output copied from data with shape (X_0, X_1, ..., X_{N-1}),
+    scatter_nd computes
+
+    .. code-block::
+
+        output[indices[0, y_0, ..., y_{K-1}],
+               ...,
+               indices[M-1, y_0, ..., y_{K-1}],
+               x_M,
+               ...,
+               x_{N-1}
+              ] = f(output[...], updates[y_0, ..., y_{K-1}, x_M, ..., x_{N-1}])
+
+    where the update function f is determinted by the mode.
+
+    Parameters
+    ----------
+    data : tvm.te.Tensor
+        The source array.
+
+    indices : tvm.te.Tensor
+        The indices of the values to extract.
+
+    updates : tvm.te.Tensor
+        The updates to apply at the Indices
+
+    mode : string
+        The update mode for the algorithm, either "update" or "add"
+        If update, the update values will replace the input data
+        If add, the update values will be added to the input data
+
+    Returns
+    -------
+    ret : tvm.te.Tensor
+    """
+    _verify_scatter_nd_inputs(data, indices, updates)
+
+    def gen_ir(data_ptr, indices_ptr, updates_ptr, out_ptr):
+        ib = ir_builder.create()
+
+        data = ib.buffer_ptr(data_ptr)
+        indices = ib.buffer_ptr(indices_ptr)
+        updates = ib.buffer_ptr(updates_ptr)
+        out = ib.buffer_ptr(out_ptr)
+
+        fused_shape = 1
+        for i in data.shape:
+            fused_shape *= i
+        with ib.for_range(0, fused_shape) as i:
+            out[i] = data[i]
+
+        # We combine all the indices dimensions but the first one into a single
+        # dimension so we can iterate it in single loop instead of an arbitrary
+        # number of loops. We do the same thing for all the data dimensions.
+        fused_indices_dimension = 1
+        for i in indices_ptr.shape[1:]:
+            fused_indices_dimension *= i
+
+        fused_data_dimension = 1
+        for i in data_ptr.shape[len(indices_ptr.shape) - 1 :]:
+            fused_data_dimension *= i
+
+        with ib.for_range(0, fused_indices_dimension, name="i") as i:
+            with ib.for_range(0, fused_data_dimension, name="j") as j:
+                offset = fused_data_dimension
+                index = j  # This is x_M, .. x_{N-1} part of the index into out.
+                # Build up the indices[0, y_0, .. y_{K-1}], .. indices[M-1, y_0, .. y_{K-1}] part
+                # of the index into out.
+                for l in reversed(range(indices_ptr.shape[0].value)):
+                    # indices[i * l * fused_indices_dimension] = indices[l, y_0, ... y_{k-1}]
+                    index += offset * indices[i + l * fused_indices_dimension]
+                    ib.emit(
+                        AssertStmt(
+                            indices[i + l * fused_indices_dimension] < shape[l],
+                            StringImm("index out of bounds"),
+                            Evaluate(0),
+                        )
+                    )
+                    offset *= shape[l]
+                if mode == "add":
+                    out[index] += updates[i * fused_data_dimension + j]
+                elif mode == "update":
+                    out[index] = updates[i * fused_data_dimension + j]
+                else:
+                    raise NotImplementedError("scatter_nd mode not in [update, add]:", mode)
+
+        return ib.get()
+
+    out_buf = decl_buffer(shape, data.dtype, "out_buf")
+    return extern(
+        [shape],
+        [data, indices, updates],
+        lambda ins, outs: gen_ir(ins[0], ins[1], ins[2], outs[0]),
+        dtype=data.dtype,
+        out_buffers=[out_buf],
+        name="scatter_nd_generic",
+        tag="scatter_nd_generic",
+    )

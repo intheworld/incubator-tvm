@@ -18,7 +18,7 @@
 import numpy as np
 from tvm import relay
 from tvm.relay import testing
-from tvm.contrib import graph_runtime
+from tvm.contrib import graph_executor
 import tvm
 from tvm import te
 import ctypes
@@ -38,8 +38,8 @@ def test_synthetic():
         mod, params = relay.testing.synthetic.get_workload(input_shape=input_shape)
         with tvm.transform.PassContext(opt_level=3):
             lib = relay.build_module.build(mod, "llvm", params=params)
-        ctx = tvm.cpu()
-        module = graph_runtime.GraphModule(lib["default"](ctx))
+        dev = tvm.cpu()
+        module = graph_executor.GraphModule(lib["default"](dev))
         module.set_input("data", data)
         module.run()
         out = module.get_output(0).asnumpy()
@@ -49,16 +49,16 @@ def test_synthetic():
     with tvm.transform.PassContext(opt_level=3):
         synthetic_gpu_lib = relay.build_module.build(synthetic_mod, "cuda", params=synthetic_params)
 
-    from tvm.contrib import util
+    from tvm.contrib import utils
 
-    temp = util.tempdir()
+    temp = utils.tempdir()
     path_lib = temp.relpath("deploy_lib.so")
     synthetic_gpu_lib.export_library(path_lib)
 
     loaded_lib = tvm.runtime.load_module(path_lib)
     data = np.random.uniform(-1, 1, size=input_shape).astype("float32")
-    ctx = tvm.gpu()
-    module = graph_runtime.GraphModule(loaded_lib["default"](ctx))
+    dev = tvm.cuda()
+    module = graph_executor.GraphModule(loaded_lib["default"](dev))
     module.set_input("data", data)
     module.run()
     out = module.get_output(0).asnumpy()
@@ -68,7 +68,7 @@ def test_synthetic():
 
 @tvm.testing.uses_gpu
 def test_cuda_lib():
-    ctx = tvm.gpu(0)
+    dev = tvm.cuda(0)
     for device in ["llvm", "cuda"]:
         if not tvm.testing.device_enabled(device):
             print("skip because %s is not enabled..." % device)
@@ -82,15 +82,15 @@ def test_cuda_lib():
     s[B].bind(bx, te.thread_axis("blockIdx.x"))
     s[B].bind(tx, te.thread_axis("threadIdx.x"))
 
-    from tvm.contrib import util
+    from tvm.contrib import utils
 
-    temp = util.tempdir()
-    fn_add = tvm.build(s, [A, B], target="cuda", target_host="llvm", name="add")
+    temp = utils.tempdir()
+    fn_add = tvm.build(s, [A, B], target="cuda --host=llvm", name="add")
     path_lib = temp.relpath("deploy_lib.so")
     fn_add.export_library(path_lib)
     m = tvm.runtime.load_module(path_lib)
-    a = tvm.nd.array(np.random.uniform(size=nn).astype(A.dtype), ctx)
-    b = tvm.nd.array(np.zeros(nn, dtype=A.dtype), ctx)
+    a = tvm.nd.array(np.random.uniform(size=nn).astype(A.dtype), dev)
+    b = tvm.nd.array(np.zeros(nn, dtype=A.dtype), dev)
     m["add"](a, b)
     np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
 

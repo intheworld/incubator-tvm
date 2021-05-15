@@ -175,7 +175,7 @@ print("Test accuracy of DGL results: {:.2%}".format(acc))
 #                                        = ((H * W)^t * A^t)^t
 #                                        = ((W^t * H^t) * A^t)^t
 from tvm import relay
-from tvm.contrib import graph_runtime
+from tvm.contrib import graph_executor
 import tvm
 from tvm import te
 
@@ -242,7 +242,9 @@ import networkx as nx
 
 def prepare_params(g, data):
     params = {}
-    params["infeats"] = data.features.astype("float32")  # Only support float32 as feature for now
+    params["infeats"] = data.features.numpy().astype(
+        "float32"
+    )  # Only support float32 as feature for now
 
     # Generate adjacency matrix
     adjacency = nx.to_scipy_sparse_matrix(g)
@@ -333,9 +335,9 @@ mod["main"] = func
 with tvm.transform.PassContext(opt_level=0):  # Currently only support opt_level=0
     lib = relay.build(mod, target, params=params)
 
-# Generate graph runtime
-ctx = tvm.context(target, 0)
-m = graph_runtime.GraphModule(lib["default"](ctx))
+# Generate graph executor
+dev = tvm.device(target, 0)
+m = graph_executor.GraphModule(lib["default"](dev))
 
 ######################################################################
 # Run the TVM model, test for accuracy and verify with DGL
@@ -349,6 +351,8 @@ test_mask = data.test_mask
 
 acc = evaluate(data, logits_tvm)
 print("Test accuracy of TVM results: {:.2%}".format(acc))
+
+import tvm.testing
 
 # Verify the results with the DGL model
 tvm.testing.assert_allclose(logits_torch, logits_tvm, atol=1e-3)

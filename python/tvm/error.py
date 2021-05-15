@@ -50,7 +50,7 @@ class InternalError(TVMError):
         if "TVM hint:" not in msg:
             msg += (
                 "\nTVM hint: You hit an internal error. "
-                + "Please open a thread on https://discuss.tvm.ai/ to report it."
+                + "Please open a thread on https://discuss.tvm.apache.org/ to report it."
             )
         super(InternalError, self).__init__(msg)
 
@@ -59,10 +59,11 @@ register_error("ValueError", ValueError)
 register_error("TypeError", TypeError)
 register_error("AttributeError", AttributeError)
 register_error("KeyError", KeyError)
+register_error("IndexError", IndexError)
 
 
 @register_error
-class RPCError(RuntimeError):
+class RPCError(TVMError):
     """Error thrown by the remote server handling the RPC call."""
 
 

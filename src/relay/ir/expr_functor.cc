@@ -33,77 +33,9 @@
 
 namespace tvm {
 namespace relay {
-/*!
- * \brief A function to iteratively traverse dataflow regions of a graph
- *
- * ExpandDataflow manually manages a stack and performs DFS to determine the processing
- * order of nodes in an input graph.
- *
- * If it finds a dataflow node (Call, Tuple, TupleGetItem), it checks if the arguments to that node
- * need to be processed via fcheck_visited. If so, the function pushes those arguments to the stack
- * and continues iteratively to process the top of the stack. When it finds a node that doesn't
- * match the dataflow types, or a node who's inputs have all been processed, it visits the current
- * leaf via fvisit_leaf.
- *
- * This function should be used internally to other classes to implement mixed-mode traversals. The
- * expectation is that fvisit_leaf will perform recursive analysis within mixed-mode traversal if it
- * hits a non-dataflow node.
- *
- * fcheck_visited and fvisit_leaf are templated to encourage compiler inlining.
- */
-template <typename FCheckVisited, typename FVisitLeaf>
-void ExpandDataflow(Expr expr, FCheckVisited fcheck_visited, FVisitLeaf fvisit_leaf) {
-  std::stack<std::pair<Expr, bool>> stack;
-  auto fpush_to_stack = [&fcheck_visited, &stack](const Expr& expr) {
-    // The second state of the stack indicate whether the child has been
-    // expanded in the pre-order.
-    // NOTE: function will be inlined.
-    if (!fcheck_visited(expr)) {
-      stack.push({expr, false});
-    }
-  };
-  fpush_to_stack(expr);
-  while (stack.size() > 0) {
-    auto node = stack.top().first;
-    if (fcheck_visited(node)) {
-      // if this node was visited through another path
-      // after being added to the stack ignore it.
-      stack.pop();
-    } else if (stack.top().second) {
-      // all the children have already been expanded.
-      // we can just run post order visit on it.
-      fvisit_leaf(node);
-      stack.pop();
-    } else if (const CallNode* op = node.as<CallNode>()) {
-      // mark expanded = true
-      stack.top().second = true;
-      // push the children to the stack in reverse order
-      // to match recursive processing order
-      for (auto it = op->args.rbegin(); it != op->args.rend(); ++it) {
-        fpush_to_stack(*it);
-      }
-      fpush_to_stack(op->op);
-    } else if (const TupleNode* op = node.as<TupleNode>()) {
-      stack.top().second = true;
-      // push the children to the stack in reverse order
-      // to match recursive processing order
-      for (auto it = op->fields.rbegin(); it != op->fields.rend(); ++it) {
-        fpush_to_stack(*it);
-      }
-    } else if (const TupleGetItemNode* op = node.as<TupleGetItemNode>()) {
-      stack.top().second = true;
-      fpush_to_stack(op->tuple);
-    } else {
-      // No need to expand the children directly run visit.
-      fvisit_leaf(node);
-      stack.pop();
-    }
-  }
-}
-
 MixedModeVisitor::MixedModeVisitor(int visit_limit) {
-  CHECK(visit_limit > 0) << "Dataflow visit limit must be greater than 0";
-  CHECK(visit_limit < 10) << "Dataflow visit limit must be less than 10";
+  ICHECK(visit_limit > 0) << "Dataflow visit limit must be greater than 0";
+  ICHECK(visit_limit < 10) << "Dataflow visit limit must be less than 10";
   visit_limit_ = visit_limit;
 }
 
@@ -171,9 +103,39 @@ Expr MixedModeMutator::VisitExpr(const Expr& expr) {
 class PostOrderRewriter : public MixedModeMutator {
  public:
   explicit PostOrderRewriter(ExprRewriter* rewriter) : rewriter_(rewriter) {}
+
   Expr DispatchVisitExpr(const Expr& expr) final {
     auto post = ExprFunctor::VisitExpr(expr);
     return rewriter_->Rewrite(expr, post);
+  }
+
+  using MixedModeMutator::VisitExpr_;
+
+  Expr VisitExpr_(const LetNode* node) final {
+    auto pre_visit = [this](const LetNode* op) {
+      Expr var = this->Mutate(op->var);
+      Expr value = this->Mutate(op->value);
+    };
+    auto post_visit = [this, node](const LetNode* op) {
+      Var var = Downcast<Var>(this->Mutate(op->var));
+      Expr value = this->Mutate(op->value);
+      Expr body = this->Mutate(op->body);
+      Expr expr = GetRef<Expr>(op);
+      Expr post;
+      if (var.same_as(op->var) && value.same_as(op->value) && body.same_as(op->body)) {
+        post = expr;
+      } else {
+        post = Let(var, value, body);
+      }
+      //  avoid rewriting the first LetNode twice
+      if (op == node) {
+        this->memo_[expr] = post;
+      } else {
+        this->memo_[expr] = this->rewriter_->Rewrite(expr, post);
+      }
+    };
+    ExpandANormalForm(node, pre_visit, post_visit);
+    return memo_[GetRef<Expr>(node)];
   }
 
  protected:
@@ -517,18 +479,20 @@ TVM_REGISTER_GLOBAL("relay.analysis.post_order_visit").set_body_typed([](Expr ex
 });
 
 // Implement bind.
-class ExprBinder : public ExprMutator, PatternMutator {
+class ExprBinder : public MixedModeMutator, PatternMutator {
  public:
   explicit ExprBinder(const tvm::Map<Var, Expr>& args_map) : args_map_(args_map) {}
 
+  using MixedModeMutator::VisitExpr_;
+
   Expr VisitExpr_(const LetNode* op) final {
-    CHECK(!args_map_.count(op->var)) << "Cannot bind an internel variable in let";
+    ICHECK(!args_map_.count(op->var)) << "Cannot bind an internel variable in let";
     return ExprMutator::VisitExpr_(op);
   }
 
   Expr VisitExpr_(const FunctionNode* op) final {
     for (Var param : op->params) {
-      CHECK(!args_map_.count(param)) << "Cannnot bind an internal function parameter";
+      ICHECK(!args_map_.count(param)) << "Cannnot bind an internal function parameter";
     }
     return ExprMutator::VisitExpr_(op);
   }
@@ -551,7 +515,7 @@ class ExprBinder : public ExprMutator, PatternMutator {
   }
 
   Var VisitVar(const Var& v) final {
-    CHECK(!args_map_.count(v)) << "Cannnot bind an internal pattern variable";
+    ICHECK(!args_map_.count(v)) << "Cannnot bind an internal pattern variable";
     return v;
   }
 
@@ -582,7 +546,7 @@ Expr Bind(const Expr& expr, const tvm::Map<Var, Expr>& args_map) {
       }
     }
     ret = Function(new_params, new_body, func->ret_type, func->type_params, func->attrs);
-    CHECK_EQ(FreeVars(expr).size(), FreeVars(ret).size());
+    ICHECK_EQ(FreeVars(expr).size(), FreeVars(ret).size());
     return std::move(ret);
   } else {
     return ExprBinder(args_map).VisitExpr(expr);
@@ -594,9 +558,31 @@ TVM_REGISTER_GLOBAL("relay.ir.Bind").set_body([](TVMArgs args, TVMRetValue* ret)
   if (input->IsInstance<ExprNode>()) {
     *ret = Bind(Downcast<Expr>(input), args[1]);
   } else {
-    CHECK(input->IsInstance<TypeNode>());
+    ICHECK(input->IsInstance<TypeNode>());
     *ret = Bind(Downcast<Type>(input), args[1]);
   }
 });
+
+void ExpandANormalForm(const LetNode* op, std::function<void(const LetNode*)> pre_visit,
+                       std::function<void(const LetNode*)> post_visit) {
+  std::stack<const LetNode*> stack;
+  stack.push(op);
+  bool is_anormal = true;
+  while (is_anormal) {
+    const LetNode* current_op = stack.top();
+    pre_visit(current_op);
+    if (const LetNode* new_op = current_op->body.as<LetNode>()) {
+      stack.push(new_op);
+    } else {
+      is_anormal = false;
+    }
+  }
+  while (stack.size()) {
+    const LetNode* current_op = stack.top();
+    stack.pop();
+    post_visit(current_op);
+  }
+}
+
 }  // namespace relay
 }  // namespace tvm

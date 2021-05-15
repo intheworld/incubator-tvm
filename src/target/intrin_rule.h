@@ -55,16 +55,15 @@ struct Direct {
 
 // Call pure extern function.
 template <typename T>
-inline void DispatchPureExtern(const TVMArgs& args, TVMRetValue* rv) {
-  PrimExpr e = args[0];
+inline PrimExpr DispatchPureExtern(const PrimExpr& e) {
   const CallNode* call = e.as<CallNode>();
-  CHECK(call != nullptr);
+  ICHECK(call != nullptr);
   // Use string based dispatch to extern for backward compact
   // TODO(tvm-team) replace once the new dispatching system is inplace.
   const OpNode* op = call->op.as<OpNode>();
-  CHECK(op != nullptr);
+  ICHECK(op != nullptr);
   std::string name = op->name;
-  CHECK_EQ(name.substr(0, 4), "tir.");
+  ICHECK_EQ(name.substr(0, 4), "tir.");
   name = T()(call->dtype, name.substr(4));
 
   if (name.length() != 0) {
@@ -72,9 +71,9 @@ inline void DispatchPureExtern(const TVMArgs& args, TVMRetValue* rv) {
     for (auto arg : call->args) {
       new_args.push_back(arg);
     }
-    *rv = Call(call->dtype, tir::builtin::call_pure_extern(), new_args);
+    return Call(call->dtype, builtin::call_pure_extern(), new_args);
   } else {
-    *rv = e;
+    return e;
   }
 }
 

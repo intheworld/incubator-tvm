@@ -173,10 +173,14 @@ def SimplifyInference():
     """Simplify the data-flow graph for inference phase. An simplified expression
     which is semantically equal to the input expression will be returned.
 
+    Note that batch norms will only be simplified if their result is indexed at
+    tuple index 0.
+
     Returns
     -------
     ret: tvm.transform.Pass
         The registered pass to perform operator simplification.
+
     """
     return _ffi_api.SimplifyInference()
 
@@ -236,6 +240,23 @@ def LazyGradientInit():
     return _ffi_api.LazyGradientInit()
 
 
+def FoldConstantExpr(expr, mod):
+    """Fold the constant expressions in a Relay program.
+    Parameters
+    ----------
+    expr: Expr
+        The expression to fold
+    mod: IRModule
+        The module the expr lives in (for global calls)
+
+    Returns
+    -------
+    new_expr: Expr
+        The expr after Constant Folding
+    """
+    return _ffi_api.FoldConstantExpr(expr, mod)
+
+
 def FoldConstant():
     """Fold the constant expressions in a Relay program.
 
@@ -262,6 +283,18 @@ def FuseOps(fuse_opt_level=-1):
         The registered pass for operator fusion.
     """
     return _ffi_api.FuseOps(fuse_opt_level)
+
+
+def DefuseOps():
+    """The inverse operation of FuseOps. It transforms a fused program returned by FuseOps into the
+    program before FuseOps. (i.e., x == DefuseOps(FuseOps(x)))
+
+    Returns
+    -------
+    ret : tvm.transform.Pass
+        The registered pass for operator defusion.
+    """
+    return _ffi_api.DefuseOps()
 
 
 def CombineParallelConv2D(min_num_branches=3):
@@ -386,6 +419,33 @@ def AlterOpLayout():
     return _ffi_api.AlterOpLayout()
 
 
+class LayoutConfig(object):
+    """A structure for customizing the ConvertLayout pass."""
+
+    current = None
+
+    def __init__(self, skip_layers=None):
+        self.skip_counter = 0
+        self.skip_layers = skip_layers if skip_layers is not None else []
+
+    def check_skip(self):
+        skip = self.skip_counter in self.skip_layers
+        self.skip_counter += 1
+        return skip
+
+    def reset(self):
+        self.skip_counter = 0
+        self.skip_layers = []
+
+    def __enter__(self):
+        self._old_manager = LayoutConfig.current
+        LayoutConfig.current = self
+        return self
+
+    def __exit__(self, ptype, value, trace):
+        LayoutConfig.current = self._old_manager
+
+
 def ConvertLayout(desired_layouts):
     """Given a dest layout, this pass transforms the expr such that most of the ops input data
     layout is changed to the dest layout. In ideal situation, there are only 2 layout transforms,
@@ -395,7 +455,7 @@ def ConvertLayout(desired_layouts):
     parser and relay.build call. This is very helpful for hardware backends that support/prefer only
     type of data layout.
 
-    RFC - https://discuss.tvm.ai/t/layout-conversion-pass/4009
+    RFC - https://discuss.tvm.apache.org/t/layout-conversion-pass/4009
 
     This pass uses most of the AlterOpLayout and InferCorrectLayout infrastructure. We can define
     new layouts for conv2d ops for now. Most of the other operators try to adapt to their input
@@ -666,7 +726,7 @@ def PartitionGraph():
     return _ffi_api.PartitionGraph()
 
 
-def AnnotateTarget(targets):
+def AnnotateTarget(targets, include_non_call_ops=True):
     """Annotate ops in an experession with a provied compiler/target and then
     use it for codegen.
 
@@ -674,6 +734,9 @@ def AnnotateTarget(targets):
     ----------
     targets : str or List[str]
         The list of target compilers used for codegen.
+    include_non_call_ops : boolean
+        If True then non-call ops also will be annotated with targets
+        If False then non-call ops will not be processed
 
     Returns
     -------
@@ -683,7 +746,9 @@ def AnnotateTarget(targets):
     """
     if isinstance(targets, str):
         targets = [targets]
-    return _ffi_api.AnnotateTarget([tvm.runtime.container.String(t) for t in targets])
+    return _ffi_api.AnnotateTarget(
+        [tvm.runtime.container.String(t) for t in targets], include_non_call_ops
+    )
 
 
 def DynamicToStatic():
@@ -735,10 +800,34 @@ def gradient(expr, mod=None, mode="higher_order"):
       The transformed expression.
     """
     if mode == "first_order":
-        return _ffi_api.first_order_gradient(expr, mod)
+        warnings.warn(
+            "using transform.gradient for first-order AD is deprecated, please use the"
+            "FirstOrderGradient module pass",
+            DeprecationWarning,
+        )
+        if mod is not None:
+            raise RuntimeError(
+                "to run first-order AD on a module, please use the FirstOrderGradient module pass."
+            )
+        return FirstOrderGradient()(tvm.IRModule.from_expr(expr))["main"]
     if mode == "higher_order":
         return _ffi_api.gradient(expr, mod)
     raise Exception("unknown mode")
+
+
+def FirstOrderGradient():
+    """
+    Transforms all global functions in the module to return the original result, paired with the
+    gradients of the inputs. This pass transforms each global function independently and does not
+    support interprocedural AD. Additionally, this pass does not support any control-flow or
+    references, and should only be used on pure data-flow graphs.
+
+    Returns
+    -------
+    ret : tvm.transform.Pass
+        The registered FirstOrderGradient pass.
+    """
+    return _ffi_api.FirstOrderGradient()
 
 
 def Defunctionalization(func, mod):
@@ -920,7 +1009,7 @@ def function_pass(pass_func=None, opt_level=None, name=None, required=None):
     """
 
     if opt_level is None:
-        raise ValueError("Please provide opt_level for the funtion pass.")
+        raise ValueError("Please provide opt_level for the function pass.")
 
     required = required if required else []
     if not isinstance(required, (list, tuple)):
@@ -1032,3 +1121,30 @@ def SimplifyExpr():
         The registered SimplifyExpr pass.
     """
     return _ffi_api.SimplifyExpr()
+
+
+def FoldExplicitPadding():
+    """
+    FoldExplicitPadding finds explict padding before an op that can support
+    implicit padding and fuses them.
+
+    Returns
+    -------
+    ret : tvm.transform.Pass
+        The registered ImplicitPadding pass.
+    """
+    return _ffi_api.FoldExplicitPadding()
+
+
+def AnnotateSpans():
+    """
+    Annotate a program with span information by first generating its textual
+    representation and then parsing it back into a Relay AST annotated with
+    span information.
+
+    Returns
+    -------
+    ret : tvm.transform.Pass
+        The regsistered AnnotateSpans pass.
+    """
+    return _ffi_api.AnnotateSpans()

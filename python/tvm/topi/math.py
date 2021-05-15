@@ -650,7 +650,7 @@ def fixed_point_multiply(x, multiplier, shift):
     return te.compute(x.shape, _compute)
 
 
-def cast(x, dtype):
+def cast(x, dtype, span=None):
     """Cast input to specified data type.
 
     Parameters
@@ -660,6 +660,9 @@ def cast(x, dtype):
 
     dtype : str
         Data type.
+
+    span : Optional[Span]
+        The location of the cast in the source.
 
     Returns
     -------
@@ -671,7 +674,7 @@ def cast(x, dtype):
     # pylint: disable=import-outside-toplevel
     from tvm.tir import _ffi_api
 
-    return _ffi_api._cast(dtype, x)
+    return _ffi_api._cast(dtype, x, span)
 
 
 def reinterpret(x, dtype):
@@ -739,3 +742,37 @@ def fast_erf(x):
         The result.
     """
     return cpp.fast_erf(x, x.dtype, tag.ELEMWISE)
+
+
+def ceil_log2(x):
+    """Compute integer ceil log2 with a special code path for vulkan
+    SPIR-V does not support log2 on fp64. Instead, we compute integer ceil_log2 via clz
+    intrinsic when the target is vulkan.
+
+    Parameters
+    ----------
+    x : tvm.te.Tensor
+        Input argument.
+
+    Returns
+    -------
+    y : tvm.te.Tensor
+        The result.
+    """
+    if not isinstance(x, tvm.tir.PrimExpr):
+        x = tvm.tir.const(x)
+
+    if "float" in x.dtype:
+        return tvm.tir.ceil(tvm.tir.log2(x))
+
+    if "vulkan" in tvm.target.Target.current().kind.name:
+        clz = tvm.tir.clz(x)
+        bits = int(x.dtype[-2:])
+        res = tvm.tir.if_then_else(x & (x - 1) == 0, bits - clz - 1, bits - clz)
+
+        if res.dtype != x.dtype:
+            return cast(res, x.dtype)
+
+        return res
+
+    return cast(tvm.tir.ceil(tvm.tir.log2(cast(x, "float64"))), x.dtype)

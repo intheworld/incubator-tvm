@@ -178,9 +178,9 @@ def test_module_pass():
         x_nd = get_rand(shape, dtype)
         y_nd = get_rand(shape, dtype)
         ref_res = x_nd.asnumpy() + y_nd.asnumpy()
-        for target, ctx in tvm.testing.enabled_targets():
-            exe1 = relay.create_executor("graph", ctx=ctx, target=target)
-            exe2 = relay.create_executor("debug", ctx=ctx, target=target)
+        for target, dev in tvm.testing.enabled_targets():
+            exe1 = relay.create_executor("graph", device=dev, target=target)
+            exe2 = relay.create_executor("debug", device=dev, target=target)
             res1 = exe1.evaluate(new_add)(x_nd, y_nd)
             tvm.testing.assert_allclose(res1.asnumpy(), ref_res, rtol=1e-5)
             res2 = exe2.evaluate(new_add)(x_nd, y_nd)
@@ -212,6 +212,7 @@ def test_function_class_pass():
     mod = fpass(mod)
     # wrap in expr
     mod2 = tvm.IRModule.from_expr(f1)
+    mod2 = tvm.relay.transform.InferType()(mod2)
     assert tvm.ir.structural_equal(mod["main"], mod2["main"])
 
 
@@ -274,9 +275,9 @@ def test_function_pass():
         # Execute the add function.
         x_nd = get_rand(shape, dtype)
         ref_res = np.log(x_nd.asnumpy() * 2)
-        for target, ctx in tvm.testing.enabled_targets():
-            exe1 = relay.create_executor("graph", ctx=ctx, target=target)
-            exe2 = relay.create_executor("debug", ctx=ctx, target=target)
+        for target, dev in tvm.testing.enabled_targets():
+            exe1 = relay.create_executor("graph", device=dev, target=target)
+            exe2 = relay.create_executor("debug", device=dev, target=target)
             res1 = exe1.evaluate(new_log)(x_nd)
             tvm.testing.assert_allclose(res1.asnumpy(), ref_res, rtol=1e-5)
             res2 = exe2.evaluate(new_log)(x_nd)
@@ -436,9 +437,9 @@ def test_sequential_pass():
         x_nd = get_rand(shape, dtype)
         y_nd = get_rand(shape, dtype)
         ref_res = np.subtract(x_nd.asnumpy() * 2, y_nd.asnumpy() * 2)
-        for target, ctx in tvm.testing.enabled_targets():
-            exe1 = relay.create_executor("graph", ctx=ctx, target=target)
-            exe2 = relay.create_executor("debug", ctx=ctx, target=target)
+        for target, dev in tvm.testing.enabled_targets():
+            exe1 = relay.create_executor("graph", device=dev, target=target)
+            exe2 = relay.create_executor("debug", device=dev, target=target)
             res1 = exe1.evaluate(new_sub)(x_nd, y_nd)
             tvm.testing.assert_allclose(res1.asnumpy(), ref_res, rtol=1e-5)
             res2 = exe2.evaluate(new_sub)(x_nd, y_nd)
@@ -447,9 +448,9 @@ def test_sequential_pass():
         # Execute the updated abs function.
         x_nd = get_rand((5, 10), dtype)
         ref_res = np.abs(x_nd.asnumpy() * 2)
-        for target, ctx in tvm.testing.enabled_targets():
-            exe1 = relay.create_executor("graph", ctx=ctx, target=target)
-            exe2 = relay.create_executor("debug", ctx=ctx, target=target)
+        for target, dev in tvm.testing.enabled_targets():
+            exe1 = relay.create_executor("graph", device=dev, target=target)
+            exe2 = relay.create_executor("debug", device=dev, target=target)
             res1 = exe1.evaluate(new_abs)(x_nd)
             tvm.testing.assert_allclose(res1.asnumpy(), ref_res, rtol=1e-5)
             res2 = exe2.evaluate(new_abs)(x_nd)
@@ -564,7 +565,9 @@ def test_print_debug_callback():
     with tvm.transform.PassContext(opt_level=3, trace=_tracer):
         mod = seq(mod)
 
-    assert __TRACE_COUNTER__ == 3
+    # TODO(@jroesch): when we remove new fn pass behavior we need to remove
+    # change this back to 3
+    assert __TRACE_COUNTER__ == 5
 
 
 if __name__ == "__main__":

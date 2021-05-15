@@ -16,7 +16,7 @@
 # under the License.
 import tvm
 from tvm import te
-from tvm.contrib import cc, util
+from tvm.contrib import cc, utils
 import ctypes
 import os
 import sys
@@ -47,7 +47,7 @@ def test_dso_module_load():
     if not tvm.testing.device_enabled("llvm"):
         return
     dtype = "int64"
-    temp = util.tempdir()
+    temp = utils.tempdir()
 
     def save_object(names):
         n = te.size_var("n")
@@ -55,7 +55,11 @@ def test_dso_module_load():
         i = te.var("i")
         # for i in 0 to n-1:
         stmt = tvm.tir.For(
-            i, 0, n - 1, 0, 0, tvm.tir.Store(Ab.data, tvm.tir.Load(dtype, Ab.data, i) + 1, i + 1)
+            i,
+            0,
+            n - 1,
+            tvm.tir.ForKind.SERIAL,
+            tvm.tir.Store(Ab.data, tvm.tir.Load(dtype, Ab.data, i) + 1, i + 1),
         )
         mod = tvm.IRModule.from_expr(
             tvm.tir.PrimFunc([Ab], stmt).with_attr("global_symbol", "main")
@@ -101,11 +105,11 @@ def test_device_module_dump():
     s[B].bind(tx, te.thread_axis("threadIdx.x"))
 
     def check_device(device):
-        ctx = tvm.context(device, 0)
+        dev = tvm.device(device, 0)
         if not tvm.testing.device_enabled(device):
             print("Skip because %s is not enabled" % device)
             return
-        temp = util.tempdir()
+        temp = utils.tempdir()
         name = "myadd_%s" % device
         if sys.platform == "darwin" or sys.platform.startswith("linux"):
             f = tvm.build(s, [A, B], device, "llvm -system-lib", name=name)
@@ -119,8 +123,8 @@ def test_device_module_dump():
         f.export_library(path_dso, cc.cross_compiler("g++"))
 
         f1 = tvm.runtime.load_module(path_dso)
-        a = tvm.nd.array(np.random.uniform(size=1024).astype(A.dtype), ctx)
-        b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), ctx)
+        a = tvm.nd.array(np.random.uniform(size=1024).astype(A.dtype), dev)
+        b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), dev)
         f1(a, b)
         np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
         if sys.platform != "win32":
@@ -129,18 +133,18 @@ def test_device_module_dump():
             np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
 
     def check_stackvm(device):
-        ctx = tvm.context(device, 0)
+        dev = tvm.device(device, 0)
         if not tvm.testing.device_enabled(device):
             print("Skip because %s is not enabled" % device)
             return
-        temp = util.tempdir()
+        temp = utils.tempdir()
         name = "myadd_%s" % device
         f = tvm.build(s, [A, B], device, "stackvm", name=name)
         path_dso = temp.relpath("dev_lib.stackvm")
         f.export_library(path_dso)
         f1 = tvm.runtime.load_module(path_dso)
-        a = tvm.nd.array(np.random.uniform(size=1024).astype(A.dtype), ctx)
-        b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), ctx)
+        a = tvm.nd.array(np.random.uniform(size=1024).astype(A.dtype), dev)
+        b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), dev)
         f(a, b)
         np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
 
@@ -159,11 +163,11 @@ def test_combine_module_llvm():
     s = te.create_schedule(B.op)
 
     def check_llvm():
-        ctx = tvm.cpu(0)
+        dev = tvm.cpu(0)
         if not tvm.testing.device_enabled("llvm"):
             print("Skip because llvm is not enabled")
             return
-        temp = util.tempdir()
+        temp = utils.tempdir()
         fadd1 = tvm.build(s, [A, B], "llvm", name="myadd1")
         fadd2 = tvm.build(s, [A, B], "llvm", name="myadd2")
         path1 = temp.relpath("myadd1.o")
@@ -176,19 +180,19 @@ def test_combine_module_llvm():
         m = tvm.runtime.load_module(path_dso)
         fadd1 = m["myadd1"]
         fadd2 = m["myadd2"]
-        a = tvm.nd.array(np.random.uniform(size=nn).astype(A.dtype), ctx)
-        b = tvm.nd.array(np.zeros(nn, dtype=A.dtype), ctx)
+        a = tvm.nd.array(np.random.uniform(size=nn).astype(A.dtype), dev)
+        b = tvm.nd.array(np.zeros(nn, dtype=A.dtype), dev)
         fadd1(a, b)
         np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
         fadd2(a, b)
         np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
 
     def check_system_lib():
-        ctx = tvm.cpu(0)
+        dev = tvm.cpu(0)
         if not tvm.testing.device_enabled("llvm"):
             print("Skip because llvm is not enabled")
             return
-        temp = util.tempdir()
+        temp = utils.tempdir()
         fadd1 = tvm.build(s, [A, B], "llvm -system-lib", name="myadd1")
         fadd2 = tvm.build(s, [A, B], "llvm -system-lib", name="myadd2")
         path1 = temp.relpath("myadd1.o")
@@ -201,8 +205,8 @@ def test_combine_module_llvm():
         dll = ctypes.CDLL(path_dso)
         # Load the system wide library
         mm = tvm.runtime.system_lib()
-        a = tvm.nd.array(np.random.uniform(size=nn).astype(A.dtype), ctx)
-        b = tvm.nd.array(np.zeros(nn, dtype=A.dtype), ctx)
+        a = tvm.nd.array(np.random.uniform(size=nn).astype(A.dtype), dev)
+        b = tvm.nd.array(np.zeros(nn, dtype=A.dtype), dev)
         mm["myadd1"](a, b)
         np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
         mm["myadd2"](a, b)

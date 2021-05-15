@@ -16,12 +16,14 @@
 # under the License.
 # pylint: disable=invalid-name, unused-argument
 """Backend compiler related feature registration"""
-from __future__ import absolute_import
+from tvm.topi.nn.utils import get_pad_tuple
+from tvm.topi.utils import get_const_tuple
+from tvm.error import OpError
 
-from tvm.topi.nn.util import get_pad_tuple
-from tvm.topi.util import get_const_tuple
 
-from ..expr import Tuple, TupleGetItem, const
+from ..expr import Tuple, TupleGetItem, const, Var
+from ..ty import TensorType
+from ..loops import while_loop
 from . import nn as _nn
 from .op import register_gradient
 from .reduce import sum as _sum
@@ -40,6 +42,7 @@ from .tensor import (
     equal,
     shape_of,
     log,
+    concatenate,
 )
 from .transform import (
     broadcast_to_like,
@@ -55,6 +58,11 @@ from .transform import (
     repeat,
     expand_dims,
     full_like,
+    split,
+    squeeze,
+    strided_set,
+    arange,
+    scatter_nd,
 )
 
 
@@ -190,7 +198,7 @@ def sigmoid_grad(orig, grad):
 @register_gradient("tanh")
 def tanh_grad(orig, grad):
     """Returns grad * (1 - tanh(x) * tanh(x))."""
-    return [grad * ones_like(orig) - orig * orig]
+    return [grad * (ones_like(orig) - orig * orig)]
 
 
 @register_gradient("nn.relu")
@@ -230,14 +238,28 @@ def divide_grad(orig, grad):
 
 @register_gradient("zeros")
 def zeros_grad(orig, grad):
-    """Returns [shape]"""
-    return [orig.args[0]]
+    """Returns []"""
+    return []
+
+
+@register_gradient("dyn.zeros")
+def dyn_zeros_grad(orig, grad):
+    """Returns the gradient of dyn.zeros which is just zero."""
+    assert len(orig.args) == 1
+    return [zeros_like(orig.args[0])]
 
 
 @register_gradient("ones")
 def ones_grad(orig, grad):
-    """Returns [shape]"""
-    return [orig.args[0]]
+    """Returns []"""
+    return []
+
+
+@register_gradient("dyn.ones")
+def dyn_ones_grad(orig, grad):
+    """Returns the gradient of dyn.ones which is just zero."""
+    assert len(orig.args) == 1
+    return [zeros_like(orig.args[0])]
 
 
 @register_gradient("zeros_like")
@@ -349,16 +371,24 @@ def global_avg_pool2d_grad(orig, grad):
     return [pool_grad]
 
 
-# not implemented, this is only for testing.
 @register_gradient("concatenate")
 def concatenate_grad(orig, grad):
+    """
+    Returns the gradient of concatenate, which is just the downstream gradient
+    split across the inputs.
+    """
     assert len(orig.args) == 1
     t = orig.args[0]
-    x = TupleGetItem(t, 0)
-    y = TupleGetItem(t, 1)
-    # Assume only two element in tuple rn.
-    # In the real implementation, concatenate_grad probably need to be implemented by an operator.
-    return [Tuple([zeros_like(x), zeros_like(y)])]
+
+    # calculate split indices. TODO(@altanh): support Any?
+    axis_dims = [ty.shape[orig.attrs.axis] for ty in t.checked_type.fields]
+    splits, cumsum = [], 0
+    for dim in axis_dims[:-1]:
+        cumsum += dim
+        splits.append(cumsum)
+
+    grads = split(grad, tuple(splits), axis=orig.attrs.axis).tuple_value
+    return [grads]
 
 
 @register_gradient("nn.conv2d")
@@ -665,3 +695,181 @@ def cross_entropy_with_logits_grad(orig, grad):
     batch_size = take(shape, const(0, dtype="int32"), axis=0)
     grad = grad / batch_size.astype(x.checked_type.dtype)
     return [-grad * y, -grad * x]
+
+
+@register_gradient("take")
+def take_grad(orig, grad):
+    """
+    Returns the gradient of take.
+    """
+
+    def make_scalar_tensor(v):
+        if isinstance(v, int):
+            v = const(v, dtype="int32")
+        return reshape(v, (1,))
+
+    # TODO(@altanh): we currently assume indices are in range
+    data, indices = orig.args
+    axis = orig.attrs.axis
+    batch_dims = orig.attrs.batch_dims
+    zero, one = map(make_scalar_tensor, [0, 1])
+    data_grad = zeros_like(data)
+    try:
+        data_shape = data.checked_type.concrete_shape
+    except TypeError as ty_err:
+        raise OpError("currently take_grad only supports data with concrete shape") from ty_err
+    if axis is None:
+        axis = 0
+        data_grad = reshape(data_grad, (-1,))
+        data_shape = 1
+        for dim in data.checked_type.concrete_shape:
+            data_shape *= dim
+        data_shape = (data_shape,)
+    else:
+        axis = int(axis)
+    if batch_dims is None:
+        batch_dims = 0
+    else:
+        batch_dims = int(batch_dims)
+    if batch_dims != 0:
+        raise OpError("take_grad only supports batch_dims equales to 0")
+    strides = [1] * len(data_shape)
+
+    if len(indices.checked_type.shape) == 0:
+        # axis on grad has been squeezed in this case
+        num_indices = one
+        indices = reshape(indices, (1,))
+        grad = expand_dims(grad, int(axis))
+    elif len(indices.checked_type.shape) == 1:
+        num_indices = take(shape_of(indices), zero, axis=0)
+    else:
+        raise OpError("take_grad only supports scalar or 1D indices")
+
+    def loop_cond(data_grad, i):
+        return squeeze(less(i, num_indices))
+
+    def loop_body(data_grad, i):
+        index = take(indices, i, axis=0)
+        grad_slice = take(grad, i, axis=axis)
+        begin, end = [], []
+        for ax, size in enumerate(data_shape):
+            size = make_scalar_tensor(size)
+            begin.append(zero if ax != axis else index)
+            end.append(size if ax != axis else index + one)
+        begin, end = concatenate(begin, axis=0), concatenate(end, axis=0)
+        # data_grad[:,...,index at axis,...,:] += grad_slice
+        update = strided_slice(data_grad, begin, end, strides=strides)
+        update = update + grad_slice  # no need to expand grad_slice since i has shape (1,)
+        next_data_grad = strided_set(data_grad, update, begin, end, strides=strides)
+        return (next_data_grad, i + one)
+
+    loop_vars = [
+        Var("data_grad", type_annotation=TensorType(data_shape, data.checked_type.dtype)),
+        Var("i", type_annotation=TensorType((1,), "int32")),
+    ]
+
+    loop = while_loop(loop_cond, loop_vars, loop_body)
+    result = loop(data_grad, zero)
+    data_grad = TupleGetItem(result, 0)
+
+    if orig.attrs.axis is None:
+        data_grad = reshape_like(data_grad, data)
+
+    return [data_grad, zeros_like(orig.args[1])]
+
+
+@register_gradient("contrib_reverse_reshape")
+def reverse_reshape_grad(orig, grad):
+    """
+    Returns the gradient of reverse_reshape (same as reshape).
+    """
+    return [reshape_like(grad, orig.args[0])]
+
+
+@register_gradient("stack")
+def stack_grad(orig, grad):
+    """
+    Returns grad split across stacked inputs.
+    """
+    stack_axis = int(orig.attrs.axis)
+    sections = len(orig.args[0].checked_type.fields)
+    splits = split(grad, sections, stack_axis)
+    splits = Tuple([squeeze(x, axis=[stack_axis]) for x in splits])
+    return [splits]
+
+
+@register_gradient("squeeze")
+def squeeze_grad(orig, grad):
+    """
+    Returns grad expanded to input size.
+    """
+    # this should work, can't use expand_dims since we lose
+    # squeeze information when axis=None
+    return [reshape_like(grad, orig.args[0])]
+
+
+@register_gradient("expand_dims")
+def expand_dims_grad(orig, grad):
+    """
+    Returns grad squeezed on expanded dims.
+    """
+    axis = int(orig.attrs.axis)
+    for _ in range(orig.attrs.num_newaxis):
+        grad = squeeze(grad, axis=[axis])
+    return [grad]
+
+
+@register_gradient("arange")
+def arange_grad(orig, grad):
+    """
+    Returns the gradient of arange.
+    """
+    start, stop, step = orig.args
+    length = take(shape_of(orig), const(0, dtype="int32"), axis=0)
+
+    grad_start = cast_like(_sum(grad), start)
+    grad_stop = zeros_like(stop)
+    grad_step = cast_like(arange(length, dtype="int32"), grad) * grad
+    grad_step = cast_like(_sum(grad_step), step)
+
+    return [grad_start, grad_stop, grad_step]
+
+
+@register_gradient("gather_nd")
+def gather_nd_grad(orig, grad):
+    """
+    Returns the gradient of gather_nd, which is simply scatter_nd.
+    """
+    data, indices = orig.args
+    return [scatter_nd(zeros_like(data), indices, grad, mode="add"), zeros_like(indices)]
+
+
+@register_gradient("reshape_like")
+def reshape_like_grad(orig, grad):
+    """
+    Returns the gradient of reshape_like.
+    """
+    data, shape_like = orig.args
+    return [reshape_like(grad, data), zeros_like(shape_like)]
+
+
+@register_gradient("where")
+def where_grad(orig, grad):
+    """
+    Returns the gradient of where.
+    """
+    cond, x, y = orig.args
+    g_zeros = zeros_like(grad)
+
+    grad_x = collapse_sum_like(where(cond, grad, g_zeros), x)
+    grad_y = collapse_sum_like(where(cond, g_zeros, grad), y)
+
+    return [zeros_like(cond), grad_x, grad_y]
+
+
+@register_gradient("less_equal")
+def less_equal_grad(orig, grad):
+    """
+    Returns the gradient of less_equal.
+    """
+    return [zeros_like(orig.args[0]), zeros_like(orig.args[1])]

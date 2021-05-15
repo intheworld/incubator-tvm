@@ -22,6 +22,9 @@
  * \brief Operators for manifest shape-aware memory allocation in Relay.
  */
 
+#include "memory.h"
+
+#include <tvm/node/node.h>
 #include <tvm/relay/attrs/memory.h>
 #include <tvm/relay/expr.h>
 #include <tvm/relay/op.h>
@@ -29,9 +32,12 @@
 #include <tvm/runtime/data_type.h>
 #include <tvm/topi/elemwise.h>
 
-#include "../../transforms/infer_layout_util.h"
+#include <vector>
+
+#include "../../transforms/infer_layout_utils.h"
 #include "../op_common.h"
 #include "../type_relations.h"
+#include "tvm/relay/attrs/device_copy.h"
 
 namespace tvm {
 namespace relay {
@@ -42,31 +48,32 @@ TVM_REGISTER_NODE_TYPE(AllocTensorAttrs);
 // The passing value in attrs and args doesn't seem super great.
 // We should consider a better solution, i.e the type relation
 // being able to see the arguments as well?
-TVM_REGISTER_GLOBAL("relay.op.memory._make.alloc_storage")
-    .set_body_typed([](Expr size, Expr alignment, TVMContext ctx, DataType dtype_hint) {
-      auto attrs = make_object<AllocStorageAttrs>();
-      attrs->dtype = dtype_hint;
-      attrs->device_id = ctx.device_id;
-      attrs->device_type = ctx.device_type;
-      static const Op& op = Op::Get("memory.alloc_storage");
-      return Call(op, {size, alignment}, Attrs(attrs), {});
-    });
+Expr AllocStorage(Expr size, Expr alignment, Device dev, DataType dtype_hint) {
+  auto attrs = make_object<AllocStorageAttrs>();
+  attrs->dtype = dtype_hint;
+  attrs->device_id = dev.device_id;
+  attrs->device_type = dev.device_type;
+  static const Op& op = Op::Get("memory.alloc_storage");
+  return Call(op, {size, alignment}, Attrs(attrs), {});
+}
+
+TVM_REGISTER_GLOBAL("relay.op.memory._make.alloc_storage").set_body_typed(AllocStorage);
 
 bool AllocStorageRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                      const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 3u);
+  ICHECK_EQ(types.size(), 3u);
   auto size_type = types[0];
   auto tensor_type = size_type.as<TensorTypeNode>();
-  CHECK(tensor_type != nullptr);
-  CHECK_EQ(tensor_type->dtype, DataType::Int(64));
-  CHECK_EQ(tensor_type->shape.size(), 0);
+  ICHECK(tensor_type != nullptr);
+  ICHECK_EQ(tensor_type->dtype, DataType::Int(64));
+  ICHECK_EQ(tensor_type->shape.size(), 0);
   auto align_type = types[1];
   auto align_ttype = align_type.as<TensorTypeNode>();
-  CHECK(align_ttype != nullptr);
-  CHECK_EQ(align_ttype->dtype, DataType::Int(64));
-  CHECK_EQ(align_ttype->shape.size(), 0);
+  ICHECK(align_ttype != nullptr);
+  ICHECK_EQ(align_ttype->dtype, DataType::Int(64));
+  ICHECK_EQ(align_ttype->shape.size(), 0);
   auto mod = reporter->GetModule();
-  CHECK(mod.defined());
+  ICHECK(mod.defined());
   auto storage_name = mod->GetGlobalTypeVar("Storage");
   auto storage = TypeCall(storage_name, {});
   reporter->Assign(types[2], storage);
@@ -90,27 +97,28 @@ RELAY_REGISTER_OP("memory.alloc_storage")
                              return {topi::identity(inputs[0])};
                            });
 
-TVM_REGISTER_GLOBAL("relay.op.memory._make.alloc_tensor")
-    .set_body_typed([](Expr storage, Expr offset, tvm::relay::Expr shape, DataType dtype,
-                       Array<IndexExpr> assert_shape) {
-      auto attrs = make_object<AllocTensorAttrs>();
-      attrs->dtype = dtype;
-      if (assert_shape.defined()) {
-        attrs->assert_shape = assert_shape;
-      } else {
-        attrs->const_shape = Downcast<Constant>(shape);
-      }
-      static const Op& op = Op::Get("memory.alloc_tensor");
-      return Call(op, {storage, offset, shape}, Attrs(attrs), {});
-    });
+Expr AllocTensor(Expr storage, Expr offset, tvm::relay::Expr shape, DataType dtype,
+                 Array<IndexExpr> assert_shape) {
+  auto attrs = make_object<AllocTensorAttrs>();
+  attrs->dtype = dtype;
+  if (assert_shape.defined()) {
+    attrs->assert_shape = assert_shape;
+  } else {
+    attrs->const_shape = Downcast<Constant>(shape);
+  }
+  static const Op& op = Op::Get("memory.alloc_tensor");
+  return Call(op, {storage, offset, shape}, Attrs(attrs), {});
+}
+
+TVM_REGISTER_GLOBAL("relay.op.memory._make.alloc_tensor").set_body_typed(AllocTensor);
 
 std::vector<int64_t> FromConstShape(Constant konst) {
   runtime::NDArray shape = konst->data;
   std::vector<int64_t> raw_shape;
-  CHECK_EQ(shape->ndim, 1u);
-  CHECK_EQ(shape->dtype.code, 0U) << "The dtype of constant shape must be int32 or int64, but got "
-                                  << runtime::DLDataType2String(shape->dtype);
-  CHECK(shape->dtype.bits == 64 || shape->dtype.bits == 32)
+  ICHECK_EQ(shape->ndim, 1u);
+  ICHECK_EQ(shape->dtype.code, 0U) << "The dtype of constant shape must be int32 or int64, but got "
+                                   << runtime::DLDataType2String(shape->dtype);
+  ICHECK(shape->dtype.bits == 64 || shape->dtype.bits == 32)
       << "The dtype of constant shape must be int32 or int64, but got"
       << runtime::DLDataType2String(shape->dtype);
 
@@ -131,28 +139,28 @@ std::vector<int64_t> FromConstShape(Constant konst) {
 
 bool AllocTensorRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                     const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 4u);
+  ICHECK_EQ(types.size(), 4u);
   auto alloc_attrs = attrs.as<AllocTensorAttrs>();
-  CHECK(alloc_attrs != nullptr) << "must be alloc_tensor attributes";
+  ICHECK(alloc_attrs != nullptr) << "must be alloc_tensor attributes";
   // First argument should be storage.
   auto mod = reporter->GetModule();
-  CHECK(mod.defined());
+  ICHECK(mod.defined());
   auto storage_name = mod->GetGlobalTypeVar("Storage");
   auto storage = relay::TypeCall(storage_name, {});
   reporter->Assign(types[0], storage);
   // Second argument should be the offset.
   auto offset_type = types[1].as<TensorTypeNode>();
-  CHECK(offset_type != nullptr) << "must be a scalar type";
+  ICHECK(offset_type != nullptr) << "must be a scalar type";
 
   // Third argument should be shape tensor.
   auto tt = types[2].as<TensorTypeNode>();
-  CHECK(tt != nullptr) << "must be tensor type";
+  ICHECK(tt != nullptr) << "must be tensor type";
 
   // Be careful about having to allocate scalars.
   int64_t dims = 0;
   if (tt->shape.size() != 0) {
     auto rank = tt->shape[0].as<tvm::IntImmNode>();
-    CHECK(rank != nullptr);
+    ICHECK(rank != nullptr);
     dims = rank->value;
   }
 
@@ -161,14 +169,14 @@ bool AllocTensorRel(const Array<Type>& types, int num_inputs, const Attrs& attrs
   if (alloc_attrs->const_shape.defined()) {
     auto con = alloc_attrs->const_shape;
     auto sh = FromConstShape(con);
-    CHECK_EQ(sh.size(), dims);
+    ICHECK_EQ(sh.size(), dims);
     Array<IndexExpr> out_shape;
     for (auto i = 0u; i < dims; i++) {
       out_shape.push_back(tvm::Integer(sh[i]));
     }
     alloc_type = TensorType(out_shape, alloc_attrs->dtype);
   } else {
-    CHECK(alloc_attrs->assert_shape.defined())
+    ICHECK(alloc_attrs->assert_shape.defined())
         << "the assert_shape must be set when const_shape is not";
     alloc_type = TensorType(alloc_attrs->assert_shape, alloc_attrs->dtype);
     return true;
@@ -198,7 +206,7 @@ RELAY_REGISTER_OP("memory.alloc_tensor")
 
 bool KillRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
              const TypeReporter& reporter) {
-  CHECK_EQ(types.size(), 2u);
+  ICHECK_EQ(types.size(), 2u);
   // TODO(@jroesch): should only support tensors.
   reporter->Assign(types[1], TupleType::Empty());
   return true;
@@ -206,7 +214,7 @@ bool KillRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
 
 RELAY_REGISTER_OP("memory.kill")
     .describe(R"code(Mark a tensor for release to the allocator.)code" TVM_ADD_FILELINE)
-    .set_num_inputs(3)
+    .set_num_inputs(1)
     .add_argument("to_free", "Tensor", "The tensor to free.")
     .add_type_rel("Kill", KillRel)
     .set_support_level(10)
@@ -298,6 +306,37 @@ TVM_REGISTER_GLOBAL("relay.op.memory._make.ToTupleType")
     .set_body_typed([](Type t, Array<Expr> array) {
       return ToTupleType(t, std::vector<Expr>(array.begin(), array.end()));
     });
+
+// relay.device_copy
+TVM_REGISTER_NODE_TYPE(DeviceCopyAttrs);
+
+Expr DeviceCopy(Expr data, int src_dev_type, int dst_dev_type) {
+  auto attrs = make_object<DeviceCopyAttrs>();
+  attrs->src_dev_type = src_dev_type;
+  attrs->dst_dev_type = dst_dev_type;
+  static const Op& op = Op::Get("device_copy");
+  return Call(op, {data}, Attrs(attrs), {});
+}
+
+TVM_REGISTER_GLOBAL("relay.op._make.device_copy").set_body_typed(DeviceCopy);
+
+RELAY_REGISTER_OP("device_copy")
+    .describe(R"code(
+Copy data from one tensor to another. The source and destination might be
+on different devices.
+)code" TVM_ADD_FILELINE)
+    .set_num_inputs(1)
+    .add_argument("data", "Tensor", "The input data.")
+    .set_support_level(10)
+    .add_type_rel("Identity", IdentityRel)
+    .set_attr<TOpPattern>("TOpPattern", kOpaque)
+    .set_attr<TOpIsStateful>("TOpIsStateful", false)
+    .set_attr<FInferCorrectLayout>("FInferCorrectLayout", ElemwiseArbitraryLayout)
+    .set_attr<FTVMCompute>("FTVMCompute",
+                           [](const Attrs& attrs, const Array<te::Tensor>& inputs,
+                              const Type& out_dtype) -> Array<te::Tensor> {
+                             return {topi::identity(inputs[0])};
+                           });
 
 }  // namespace relay
 }  // namespace tvm

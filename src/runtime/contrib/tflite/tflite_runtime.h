@@ -37,7 +37,7 @@
 namespace tvm {
 namespace runtime {
 
-#define CHECK_TFLITE_STATUS(ret) CHECK_EQ(ret, kTfLiteOk)
+#define CHECK_TFLITE_STATUS(ret) ICHECK_EQ(ret, kTfLiteOk)
 
 /*!
  * \brief Tflite runtime.
@@ -67,11 +67,11 @@ class TFLiteRuntime : public ModuleNode {
   void Invoke();
 
   /*!
-   * \brief Initialize the tflite runtime with tflite model and context.
+   * \brief Initialize the tflite runtime with tflite model and device.
    * \param tflite_model_bytes The tflite model.
-   * \param ctx The context where the tflite model will be executed on.
+   * \param dev The device where the tflite model will be executed on.
    */
-  void Init(const std::string& tflite_model_bytes, TVMContext ctx);
+  void Init(const std::string& tflite_model_bytes, Device dev);
 
   /*!
    * \brief set index-th input to the model.
@@ -93,13 +93,18 @@ class TFLiteRuntime : public ModuleNode {
    * \return NDArray corresponding to given output node index.
    */
   NDArray GetOutput(int index) const;
+  /*!
+   * \brief Set the number of threads available to the interpreter.
+   * \param num_threads The number of threads to be set.
+   */
+  void SetNumThreads(int num_threads);
 
   // Buffer backing the interpreter's model
   std::unique_ptr<char[]> flatBuffersBuffer_;
   // TFLite interpreter
   std::unique_ptr<tflite::Interpreter> interpreter_;
-  // TVM context
-  TVMContext ctx_;
+  // TVM device
+  Device device_;
 };
 
 }  // namespace runtime

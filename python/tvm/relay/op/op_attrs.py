@@ -194,6 +194,11 @@ class ReshapeAttrs(Attrs):
     """Attributes for transform.reshape"""
 
 
+@tvm._ffi.register_object("relay.attrs.ReshapeLikeAttrs")
+class ReshapeLikeAttrs(Attrs):
+    """Attributes for transform.reshape_like"""
+
+
 @tvm._ffi.register_object("relay.attrs.GatherAttrs")
 class GatherAttrs(Attrs):
     """Attributes for transform.gather"""
@@ -297,6 +302,11 @@ class GetValidCountsAttrs(Attrs):
 @tvm._ffi.register_object("relay.attrs.NonMaximumSuppressionAttrs")
 class NonMaximumSuppressionAttrs(Attrs):
     """Attributes for vision.non_maximum_suppression"""
+
+
+@tvm._ffi.register_object("relay.attrs.AllClassNonMaximumSuppressionAttrs")
+class AllClassNonMaximumSuppressionAttrs(Attrs):
+    """Attributes for vision.all_classnon_maximum_suppression"""
 
 
 @tvm._ffi.register_object("relay.attrs.ROIAlignAttrs")
@@ -464,6 +474,11 @@ class QuantizeAttrs(Attrs):
     """Attributes used in quantize operators"""
 
 
+@tvm._ffi.register_object("relay.attrs.DequantizeAttrs")
+class DequantizeAttrs(Attrs):
+    """Attributes used in dequantize operators"""
+
+
 @tvm._ffi.register_object("relay.attrs.ReduceAttrs")
 class ReduceAttrs(Attrs):
     """Attributes used in reduction operators (e.g. sum)"""
@@ -532,3 +547,18 @@ class TupleGetItemAttrs(Attrs):
 @tvm._ffi.register_object("relay.attrs.WithFuncIdAttrs")
 class WithFuncIdAttrs(Attrs):
     """Attributes used in with_funcid annotation operators"""
+
+
+@tvm._ffi.register_object("relay.attrs.SpaceToBatchNDAttrs")
+class SpaceToBatchNDAttrs(Attrs):
+    """Attributes used in SpaceToBatchND operators"""
+
+
+@tvm._ffi.register_object("relay.attrs.BatchToSpaceNDAttrs")
+class BatchToSpaceNDAttrs(Attrs):
+    """Attributes used in BatchToSpaceNDAttrs operators"""
+
+
+@tvm._ffi.register_object("relay.attrs.ThreefryGenerateAttrs")
+class ThreefryGenerateAttrs(Attrs):
+    """Attributes used in ThreefryGenerateAttrs operators"""

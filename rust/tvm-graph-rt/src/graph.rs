@@ -26,28 +26,30 @@ use nom::{
     character::complete::{alpha1, digit1},
     complete, count, do_parse, length_count, map, named,
     number::complete::{le_i32, le_i64, le_u16, le_u32, le_u64, le_u8},
-    opt, tag, take, tuple,
+    opt, tag, take, tuple, Err as NomErr,
 };
 use serde::{Deserialize, Serialize};
 use serde_json;
 
 use tvm_sys::ffi::{DLDataTypeCode_kDLFloat, DLDataTypeCode_kDLInt, DLDataTypeCode_kDLUInt};
 
-use tvm_sys::{ffi::DLTensor, ArgValue, Context, DataType, DeviceType};
+use tvm_sys::{ffi::DLTensor, ArgValue, DataType, Device, DeviceType};
 
 use crate::{errors::*, Module, Storage, Tensor};
 
 // @see `kTVMNDArrayMagic` in `ndarray.h`
 const _NDARRAY_MAGIC: u64 = 0xDD5E_40F0_96B4_A13F;
-// @see `kTVMNDArrayListMagic` in `graph_runtime.h`
+// @see `kTVMNDArrayListMagic` in `graph_executor.h`
 const _NDARRAY_LIST_MAGIC: u64 = 0xF7E5_8D4F_0504_9CB7;
 
 /// A TVM computation graph.
 ///
 /// # Examples
 ///
-/// ```norun
-/// let graph_json = fs::read_to_string("graph.json").unwrap();
+/// ```no_run
+/// use tvm_graph_rt::Graph;
+/// use std::convert::TryFrom;
+/// let graph_json = std::fs::read_to_string("graph.json").unwrap();
 /// let graph = Graph::try_from(&graph_json).unwrap();
 /// ```
 #[derive(Serialize, Deserialize, Debug)]
@@ -119,10 +121,22 @@ impl Node {
             .attrs
             .as_ref()
             .ok_or_else(|| GraphFormatError::MissingAttr(self.name.clone(), "attrs".to_owned()))?;
+
+        let func_name = get_node_attr!(self.name, attrs, "func_name")?.to_owned();
+
+        let num_outputs = get_node_attr!(self.name, attrs, "num_outputs")?
+            .parse::<usize>()
+            .map_err(|error| GraphFormatError::InvalidAttr("num_outputs".to_string(), error))?;
+
+        let flatten_data = get_node_attr!(self.name, attrs, "flatten_data")?
+            .parse::<u8>()
+            .map(|val| val == 1)
+            .map_err(|error| GraphFormatError::InvalidAttr("flatten_data".to_string(), error))?;
+
         Ok(NodeAttrs {
-            func_name: get_node_attr!(self.name, attrs, "func_name")?.to_owned(),
-            num_outputs: get_node_attr!(self.name, attrs, "num_outputs")?.parse::<usize>()?,
-            flatten_data: get_node_attr!(self.name, attrs, "flatten_data")?.parse::<u8>()? == 1,
+            func_name,
+            num_outputs,
+            flatten_data,
         })
     }
 }
@@ -130,16 +144,14 @@ impl Node {
 impl<'a> TryFrom<&'a String> for Graph {
     type Error = GraphFormatError;
     fn try_from(graph_json: &String) -> Result<Self, GraphFormatError> {
-        let graph = serde_json::from_str(graph_json)?;
-        Ok(graph)
+        serde_json::from_str(graph_json).map_err(|error| GraphFormatError::Parse(error))
     }
 }
 
 impl<'a> TryFrom<&'a str> for Graph {
     type Error = GraphFormatError;
     fn try_from(graph_json: &'a str) -> Result<Self, Self::Error> {
-        let graph = serde_json::from_str(graph_json)?;
-        Ok(graph)
+        serde_json::from_str(graph_json).map_err(|error| GraphFormatError::Parse(error))
     }
 }
 
@@ -147,7 +159,7 @@ impl<'a> TryFrom<&'a str> for Graph {
 ///
 /// # Examples
 ///
-/// ```norun
+/// ```no_compile
 /// use ndarray::Array;
 ///
 /// let syslib = SystemLibModule::default(); // a provider of TVM functions
@@ -228,7 +240,7 @@ impl<'m, 't> GraphExecutor<'m, 't> {
                 let storage = storages[storage_id].view();
                 Tensor {
                     data: mem::replace(&mut storages[storage_id], storage),
-                    ctx: Context::default(),
+                    device: Device::default(),
                     dtype,
                     size: shape.iter().product::<i64>() as usize,
                     shape,
@@ -406,14 +418,14 @@ named! {
     )
 }
 
-// Parses a Context
+// Parses a Device
 named! {
-  tvm_ctx<&[u8], Context>,
+  tvm_device<&[u8], Device>,
   do_parse!(
     device_type: le_u32 >>
     device_id:   le_i32 >>
     (
-        Context {
+        Device {
             device_type: DeviceType::from(device_type),
             device_id: device_id as usize,
         }
@@ -437,7 +449,7 @@ named! {
     do_parse!(
                 take!(8)      >>
                 le_u64        >>
-        ctx:    tvm_ctx       >>
+        device: tvm_device    >>
         ndim:   le_u32        >>
         dtype:  data_type     >>
         shape:  count!(map!(le_i64, |sz| sz as i64), ndim as usize) >>
@@ -446,7 +458,7 @@ named! {
         (
             Tensor {
                 data: Storage::from(data),
-                ctx: ctx,
+                device: device,
                 dtype: dtype,
                 size: shape.iter().product::<i64>() as usize,
                 shape: shape,
@@ -471,16 +483,25 @@ named! {
     )
 }
 
-/// Loads a param dict saved using `relay.save_param_dict`.
+/// Loads a param dict saved using `runtime.save_param_dict`.
 pub fn load_param_dict(bytes: &[u8]) -> Result<HashMap<String, Tensor>, GraphFormatError> {
-    if let Ok((remaining_bytes, param_dict)) = parse_param_dict(bytes) {
-        if remaining_bytes.is_empty() {
-            Ok(param_dict)
-        } else {
-            Err(GraphFormatError::Params)
+    match parse_param_dict(bytes) {
+        Ok((remaining_bytes, param_dict)) => {
+            if remaining_bytes.is_empty() {
+                Ok(param_dict)
+            } else {
+                Err(GraphFormatError::Params(None))
+            }
         }
-    } else {
-        Err(GraphFormatError::Params)
+        Err(error) => Err(match error {
+            NomErr::Incomplete(error) => GraphFormatError::Params(Some(NomErr::Incomplete(error))),
+            NomErr::Error((remainder, error_kind)) => {
+                GraphFormatError::Params(Some(NomErr::Error((remainder.into(), error_kind))))
+            }
+            NomErr::Failure((remainder, error_kind)) => {
+                GraphFormatError::Params(Some(NomErr::Failure((remainder.into(), error_kind))))
+            }
+        }),
     }
 }
 

@@ -25,8 +25,9 @@ from tvm.relay import vm as rly_vm
 from tvm import relay
 
 from tvm.relay.scope_builder import ScopeBuilder
+from tvm.relay import transform
 from tvm.relay.prelude import Prelude
-from tvm.contrib import util
+from tvm.contrib import utils
 from tvm.relay import testing
 
 
@@ -42,30 +43,29 @@ def create_exec(f, target="llvm", params=None):
         return executable
 
 
-def get_serialized_output(mod, *data, params=None, target="llvm", ctx=tvm.cpu()):
+def get_serialized_output(mod, *data, params=None, target="llvm", device=tvm.cpu()):
     exe = create_exec(mod, target, params=params)
     code, lib = exe.save()
     des_exec = _vm.Executable.load_exec(code, lib)
-    des_vm = _vm.VirtualMachine(des_exec, ctx)
+    des_vm = _vm.VirtualMachine(des_exec, device)
     result = des_vm.run(*data)
     return result
 
 
 def run_network(mod, params, dtype="float32"):
-    def get_vm_output(mod, data, params, target, ctx, dtype="float32"):
-        ex = relay.create_executor("vm", mod=mod, ctx=ctx)
+    def get_vm_output(mod, data, params, target, device, dtype="float32"):
+        ex = relay.create_executor("vm", mod=mod, device=device)
         result = ex.evaluate()(data, **params)
         return result.asnumpy().astype(dtype)
 
-    print(mod["main"])
     data_shape = [int(x) for x in mod["main"].checked_type.arg_types[0].shape]
     data = np.random.uniform(size=data_shape).astype(dtype)
     target = "llvm"
-    ctx = tvm.cpu(0)
+    dev = tvm.cpu(0)
 
-    tvm_out = get_vm_output(mod, tvm.nd.array(data.astype(dtype)), params, target, ctx, dtype)
+    tvm_out = get_vm_output(mod, tvm.nd.array(data.astype(dtype)), params, target, dev, dtype)
     vm_out = get_serialized_output(
-        mod, tvm.nd.array(data.astype(dtype)), params=params, target=target, ctx=ctx
+        mod, tvm.nd.array(data.astype(dtype)), params=params, target=target, device=dev
     )
     tvm.testing.assert_allclose(vm_out.asnumpy().astype(dtype), tvm_out, rtol=1e-5, atol=1e-5)
 
@@ -78,11 +78,17 @@ def test_serializer():
     glb_f1 = relay.GlobalVar("f1")
     mod[glb_f1] = f1
 
+    # TODO(@jroesch): look into optimizing away the need to do this
+    mod = transform.InferType()(mod)
+
     b = relay.const(2.0, "float32")
     y = relay.var("y", shape=(10, 10), dtype="float32")
     f2 = relay.Function([y], y - b)
     glb_f2 = relay.GlobalVar("f2")
     mod[glb_f2] = f2
+
+    # TODO(@jroesch): look into optimizing away the need to do this
+    mod = transform.InferType()(mod)
 
     x1 = relay.var("x1", shape=(10, 10), dtype="float32")
     y1 = relay.var("y1", shape=(10, 10), dtype="float32")
@@ -123,7 +129,7 @@ def test_save_load():
     assert isinstance(code, bytearray)
 
     # save and load the code and lib file.
-    tmp = util.tempdir()
+    tmp = utils.tempdir()
     path_lib = tmp.relpath("lib.so")
     lib.export_library(path_lib)
     with open(tmp.relpath("code.ro"), "wb") as fo:
@@ -181,6 +187,7 @@ def test_loop():
         sb.ret(relay.Call(sum_up, [one_less, new_accum]))
     func = relay.Function([i, accum], sb.get())
     mod[sum_up] = func
+    mod = transform.InferType()(mod)
     loop_bound = 0
     i_data = np.array(loop_bound, dtype="int32")
     accum_data = np.array(0, dtype="int32")
@@ -206,10 +213,10 @@ def test_tuple():
 def test_adt_list():
     mod = tvm.IRModule()
     p = Prelude(mod)
-
-    l1 = p.cons(relay.const(1), p.nil())
-    l21 = p.cons(relay.const(2), l1)
-    l321 = p.cons(relay.const(3), l21)
+    _, cons, nil = mod.get_type("List")
+    l1 = cons(relay.const(1), nil())
+    l21 = cons(relay.const(2), l1)
+    l321 = cons(relay.const(3), l21)
 
     f = relay.Function([], l321)
     mod["main"] = f
@@ -229,7 +236,7 @@ def test_adt_compose():
     mod = tvm.IRModule()
     p = Prelude(mod)
 
-    compose = p.compose
+    compose = mod.get_global_var("compose")
 
     # add_one = fun x -> x + 1
     sb = relay.ScopeBuilder()
@@ -304,8 +311,8 @@ def test_dynamic_bcast():
     x_data = np.random.uniform(size=(1, 2)).astype(dtype)
     y_data = np.random.uniform(size=(3, 2)).astype(dtype)
     res_np = np.add(x_data, y_data)
-    for target, ctx in testing.enabled_targets():
-        res = get_serialized_output(mod, *(x_data, y_data), target=target, ctx=ctx)
+    for target, dev in testing.enabled_targets():
+        res = get_serialized_output(mod, *(x_data, y_data), target=target, device=dev)
         tvm.testing.assert_allclose(res.asnumpy(), res_np)
 
 

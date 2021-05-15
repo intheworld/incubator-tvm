@@ -16,11 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-#pragma once
 
-#include <dmlc/logging.h>
+#ifndef TVM_RUNTIME_VULKAN_VULKAN_COMMON_H_
+#define TVM_RUNTIME_VULKAN_VULKAN_COMMON_H_
+
 #include <tvm/runtime/c_runtime_api.h>
 #include <tvm/runtime/device_api.h>
+#include <tvm/runtime/logging.h>
 #include <tvm/runtime/packed_func.h>
 #include <vulkan/vulkan.h>
 
@@ -32,6 +34,11 @@
 namespace tvm {
 namespace runtime {
 namespace vulkan {
+
+const int kMaxPushConstantsBytes = 128;
+
+/*! \brief A mask used when we attach additional information to shaders */
+enum ShaderMetaDataFlagMask { kUseUBO = 0 };
 
 inline const char* VKGetErrorString(VkResult error) {
   switch (error) {
@@ -80,10 +87,10 @@ inline const char* VKGetErrorString(VkResult error) {
  * \brief Protected Vulkan call
  * \param func Expression to call.
  */
-#define VULKAN_CHECK_ERROR(__e)                                     \
-  {                                                                 \
-    CHECK(__e == VK_SUCCESS) << "Vulan Error, code=" << __e << ": " \
-                             << vulkan::VKGetErrorString(__e);      \
+#define VULKAN_CHECK_ERROR(__e)                                      \
+  {                                                                  \
+    ICHECK(__e == VK_SUCCESS) << "Vulan Error, code=" << __e << ": " \
+                              << vulkan::VKGetErrorString(__e);      \
   }
 
 #define VULKAN_CALL(func)    \
@@ -101,14 +108,6 @@ struct VulkanDescriptorTemplateKHRFunctions {
 
 struct VulkanGetBufferMemoryRequirements2Functions {
   PFN_vkGetBufferMemoryRequirements2KHR vkGetBufferMemoryRequirements2KHR{nullptr};
-};
-
-struct VulkanStagingBuffer {
-  VkDevice device{nullptr};
-  VkBuffer buffer{VK_NULL_HANDLE};
-  VkDeviceMemory memory{VK_NULL_HANDLE};
-  void* host_addr{nullptr};
-  size_t size{0};
 };
 
 struct VulkanContext {
@@ -143,3 +142,4 @@ struct VulkanContext {
 }  // namespace vulkan
 }  // namespace runtime
 }  // namespace tvm
+#endif  // TVM_RUNTIME_VULKAN_VULKAN_COMMON_H_

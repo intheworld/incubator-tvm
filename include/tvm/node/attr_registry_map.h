@@ -23,7 +23,7 @@
 #ifndef TVM_NODE_ATTR_REGISTRY_MAP_H_
 #define TVM_NODE_ATTR_REGISTRY_MAP_H_
 
-#include <tvm/node/container.h>
+#include <tvm/runtime/container.h>
 
 #include <utility>
 #include <vector>
@@ -56,9 +56,9 @@ class AttrRegistryMapContainerMap {
    * \return the const reference to the content value.
    */
   const runtime::TVMRetValue& operator[](const KeyType& key) const {
-    CHECK(key.defined());
+    ICHECK(key.defined());
     const uint32_t idx = key->AttrRegistryIndex();
-    CHECK(idx < data_.size() && data_[idx].second != 0)
+    ICHECK(idx < data_.size() && data_[idx].second != 0)
         << "Attribute " << attr_name_ << " has not been registered for " << key->name;
     return data_[idx].first;
   }
@@ -71,7 +71,7 @@ class AttrRegistryMapContainerMap {
    */
   template <typename ValueType>
   ValueType get(const KeyType& key, ValueType def_value) const {
-    CHECK(key.defined());
+    ICHECK(key.defined());
     const uint32_t idx = key->AttrRegistryIndex();
     if (idx < data_.size() && data_[idx].second != 0) {
       return data_[idx].first;

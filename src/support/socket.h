@@ -26,10 +26,14 @@
 #define TVM_SUPPORT_SOCKET_H_
 
 #if defined(_WIN32)
+
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#undef NOMINMAX
+
 using ssize_t = int;
 #ifdef _MSC_VER
 #pragma comment(lib, "Ws2_32.lib")
@@ -45,14 +49,15 @@ using ssize_t = int;
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
-#include <dmlc/logging.h>
+#include <tvm/runtime/logging.h>
+#include <tvm/runtime/registry.h>
 
 #include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-#include "../support/util.h"
+#include "../support/utils.h"
 
 #if defined(_WIN32)
 static inline int poll(struct pollfd* pfd, int nfds, int timeout) {
@@ -64,6 +69,7 @@ static inline int poll(struct pollfd* pfd, int nfds, int timeout) {
 
 namespace tvm {
 namespace support {
+
 /*!
  * \brief Get current host name.
  * \return The hostname.
@@ -71,7 +77,7 @@ namespace support {
 inline std::string GetHostName() {
   std::string buf;
   buf.resize(256);
-  CHECK_NE(gethostname(&buf[0], 256), -1);
+  ICHECK_NE(gethostname(&buf[0], 256), -1);
   return std::string(buf.c_str());
 }
 
@@ -113,7 +119,7 @@ struct SockAddr {
     size_t sep = url.find(",");
     std::string host = url.substr(2, sep - 3);
     std::string port = url.substr(sep + 1, url.length() - 1);
-    CHECK(ValidateIP(host)) << "Url address is not valid " << url;
+    ICHECK(ValidateIP(host)) << "Url address is not valid " << url;
     if (host == "localhost") {
       host = "127.0.0.1";
     }
@@ -133,7 +139,7 @@ struct SockAddr {
     hints.ai_socktype = SOCK_STREAM;
     addrinfo* res = nullptr;
     int sig = getaddrinfo(host, nullptr, &hints, &res);
-    CHECK(sig == 0 && res != nullptr) << "cannot obtain address of " << host;
+    ICHECK(sig == 0 && res != nullptr) << "cannot obtain address of " << host;
     switch (res->ai_family) {
       case AF_INET: {
         sockaddr_in* addr4 = reinterpret_cast<sockaddr_in*>(&addr);
@@ -148,7 +154,7 @@ struct SockAddr {
         addr6->sin6_family = AF_INET6;
       } break;
       default:
-        CHECK(false) << "cannot decode address";
+        ICHECK(false) << "cannot decode address";
     }
     freeaddrinfo(res);
   }
@@ -173,7 +179,7 @@ struct SockAddr {
       const in_addr& addr4 = reinterpret_cast<const sockaddr_in*>(&addr)->sin_addr;
       sinx_addr = reinterpret_cast<const void*>(&addr4);
     } else {
-      CHECK(false) << "illegal address";
+      ICHECK(false) << "illegal address";
     }
 
 #ifdef _WIN32
@@ -183,7 +189,7 @@ struct SockAddr {
     const char* s =
         inet_ntop(addr.ss_family, sinx_addr, &buf[0], static_cast<socklen_t>(buf.length()));
 #endif
-    CHECK(s != nullptr) << "cannot decode address";
+    ICHECK(s != nullptr) << "cannot decode address";
     std::ostringstream os;
     os << s << ":" << port();
     return os.str();
@@ -302,7 +308,7 @@ class Socket {
     }
   }
   /*!
-   * \return last error of socket 2operation
+   * \return last error of socket operation
    */
   static int GetLastError() {
 #ifdef _WIN32
@@ -357,6 +363,42 @@ class Socket {
 #endif
   }
 
+  /*!
+   * \brief Call a function and retry if an EINTR error is encountered.
+   *
+   *  Socket operations can return EINTR when the interrupt handler
+   *  is registered by the execution environment(e.g. python).
+   *  We should retry if there is no KeyboardInterrupt recorded in
+   *  the environment.
+   *
+   * \note This function is needed to avoid rare interrupt event
+   *       in long running server code.
+   *
+   * \param func The function to retry.
+   * \return The return code returned by function f or error_value on retry failure.
+   */
+  template <typename FuncType>
+  ssize_t RetryCallOnEINTR(FuncType func) {
+    ssize_t ret = func();
+    // common path
+    if (ret != -1) return ret;
+    // less common path
+    do {
+      if (GetLastError() == EINTR) {
+        // Call into env check signals to see if there are
+        // environment specific(e.g. python) signal exceptions.
+        // This function will throw an exception if there is
+        // if the process received a signal that requires TVM to return immediately (e.g. SIGINT).
+        runtime::EnvCheckSignals();
+      } else {
+        // other errors
+        return ret;
+      }
+      ret = func();
+    } while (ret == -1);
+    return ret;
+  }
+
  protected:
   explicit Socket(SockType sockfd) : sockfd(sockfd) {}
 };
@@ -403,7 +445,7 @@ class TCPSocket : public Socket {
    * \return The accepted socket connection.
    */
   TCPSocket Accept() {
-    SockType newfd = accept(sockfd, nullptr, nullptr);
+    SockType newfd = RetryCallOnEINTR([&]() { return accept(sockfd, nullptr, nullptr); });
     if (newfd == INVALID_SOCKET) {
       Socket::Error("Accept");
     }
@@ -416,7 +458,8 @@ class TCPSocket : public Socket {
    */
   TCPSocket Accept(SockAddr* addr) {
     socklen_t addrlen = sizeof(addr->addr);
-    SockType newfd = accept(sockfd, reinterpret_cast<sockaddr*>(&addr->addr), &addrlen);
+    SockType newfd = RetryCallOnEINTR(
+        [&]() { return accept(sockfd, reinterpret_cast<sockaddr*>(&addr->addr), &addrlen); });
     if (newfd == INVALID_SOCKET) {
       Socket::Error("Accept");
     }
@@ -456,7 +499,8 @@ class TCPSocket : public Socket {
    */
   ssize_t Send(const void* buf_, size_t len, int flag = 0) {
     const char* buf = reinterpret_cast<const char*>(buf_);
-    return send(sockfd, buf, static_cast<sock_size_t>(len), flag);
+    return RetryCallOnEINTR(
+        [&]() { return send(sockfd, buf, static_cast<sock_size_t>(len), flag); });
   }
   /*!
    * \brief receive data using the socket
@@ -468,7 +512,8 @@ class TCPSocket : public Socket {
    */
   ssize_t Recv(void* buf_, size_t len, int flags = 0) {
     char* buf = reinterpret_cast<char*>(buf_);
-    return recv(sockfd, buf, static_cast<sock_size_t>(len), flags);
+    return RetryCallOnEINTR(
+        [&]() { return recv(sockfd, buf, static_cast<sock_size_t>(len), flags); });
   }
   /*!
    * \brief peform block write that will attempt to send all data out
@@ -481,7 +526,8 @@ class TCPSocket : public Socket {
     const char* buf = reinterpret_cast<const char*>(buf_);
     size_t ndone = 0;
     while (ndone < len) {
-      ssize_t ret = send(sockfd, buf, static_cast<ssize_t>(len - ndone), 0);
+      ssize_t ret = RetryCallOnEINTR(
+          [&]() { return send(sockfd, buf, static_cast<ssize_t>(len - ndone), 0); });
       if (ret == -1) {
         if (LastErrorWouldBlock()) return ndone;
         Socket::Error("SendAll");
@@ -502,7 +548,8 @@ class TCPSocket : public Socket {
     char* buf = reinterpret_cast<char*>(buf_);
     size_t ndone = 0;
     while (ndone < len) {
-      ssize_t ret = recv(sockfd, buf, static_cast<sock_size_t>(len - ndone), MSG_WAITALL);
+      ssize_t ret = RetryCallOnEINTR(
+          [&]() { return recv(sockfd, buf, static_cast<sock_size_t>(len - ndone), MSG_WAITALL); });
       if (ret == -1) {
         if (LastErrorWouldBlock()) {
           LOG(FATAL) << "would block";
@@ -522,8 +569,8 @@ class TCPSocket : public Socket {
    */
   void SendBytes(std::string data) {
     int datalen = data.length();
-    CHECK_EQ(SendAll(&datalen, sizeof(datalen)), sizeof(datalen));
-    CHECK_EQ(SendAll(data.c_str(), datalen), datalen);
+    ICHECK_EQ(SendAll(&datalen, sizeof(datalen)), sizeof(datalen));
+    ICHECK_EQ(SendAll(data.c_str(), datalen), datalen);
   }
   /*!
    * \brief Receive the data to remote.
@@ -531,10 +578,10 @@ class TCPSocket : public Socket {
    */
   std::string RecvBytes() {
     int datalen = 0;
-    CHECK_EQ(RecvAll(&datalen, sizeof(datalen)), sizeof(datalen));
+    ICHECK_EQ(RecvAll(&datalen, sizeof(datalen)), sizeof(datalen));
     std::string data;
     data.resize(datalen);
-    CHECK_EQ(RecvAll(&data[0], datalen), datalen);
+    ICHECK_EQ(RecvAll(&data[0], datalen), datalen);
     return data;
   }
 };

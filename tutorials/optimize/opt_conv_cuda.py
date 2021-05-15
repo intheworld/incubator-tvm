@@ -91,7 +91,7 @@ B = te.compute(
 # programmers. Thus how to maximize the data reuse in the shared memory is
 # critical to achieve high performance in GPU kernels.
 #
-# .. image:: https://github.com/dmlc/web-data/raw/master/tvm/tutorial/gpu_memory_hierarchy.png
+# .. image:: https://github.com/dmlc/web-data/raw/main/tvm/tutorial/gpu_memory_hierarchy.png
 #      :align: center
 #      :height: 319px
 #      :width: 271px
@@ -125,7 +125,7 @@ BL = s.cache_write(B, "local")
 # x block_factor (8 x 64) data from Apad and B each time to buffers in the
 # shared memory.
 #
-# .. image:: https://github.com/dmlc/web-data/raw/master/tvm/tutorial/conv_gpu_blocking.png
+# .. image:: https://github.com/dmlc/web-data/raw/main/tvm/tutorial/conv_gpu_blocking.png
 #      :align: center
 #      :height: 308px
 #      :width: 317px
@@ -167,7 +167,7 @@ s[B].bind(bx, block_x)
 # parts, and then tile into 8x8 grids. Therefore, shown in the figure below,
 # each thread computes 4 strided grids, where size of each grid is 4 x 4.
 #
-# .. image:: https://github.com/dmlc/web-data/raw/master/tvm/tutorial/conv_gpu_vthread.png
+# .. image:: https://github.com/dmlc/web-data/raw/main/tvm/tutorial/conv_gpu_vthread.png
 #      :align: center
 #      :height: 188px
 #      :width: 268px
@@ -238,12 +238,12 @@ s[WW].vectorize(fi)  # vectorize memory load
 #
 
 func = tvm.build(s, [A, W, B], "cuda")
-ctx = tvm.gpu(0)
+dev = tvm.cuda(0)
 a_np = np.random.uniform(size=(in_size, in_size, in_channel, batch)).astype(A.dtype)
 w_np = np.random.uniform(size=(kernel, kernel, in_channel, out_channel)).astype(W.dtype)
-a = tvm.nd.array(a_np, ctx)
-w = tvm.nd.array(w_np, ctx)
-b = tvm.nd.array(np.zeros((out_size, out_size, out_channel, batch), dtype=B.dtype), ctx)
+a = tvm.nd.array(a_np, dev)
+w = tvm.nd.array(w_np, dev)
+b = tvm.nd.array(np.zeros((out_size, out_size, out_channel, batch), dtype=B.dtype), dev)
 func(a, w, b)
-evaluator = func.time_evaluator(func.entry_name, ctx, number=1)
+evaluator = func.time_evaluator(func.entry_name, dev, number=1)
 print("Convolution: %f ms" % (evaluator(a, w, b).mean * 1e3))

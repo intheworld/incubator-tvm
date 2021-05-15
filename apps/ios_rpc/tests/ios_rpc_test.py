@@ -26,7 +26,7 @@ import os
 import re
 import sys
 from tvm import rpc
-from tvm.contrib import util, xcode
+from tvm.contrib import utils, xcode
 import numpy as np
 
 # Set to be address of tvm proxy.
@@ -59,7 +59,7 @@ def test_rpc_module():
     n = tvm.runtime.convert(1024)
     A = te.placeholder((n,), name="A")
     B = te.compute(A.shape, lambda *i: A(*i) + 1.0, name="B")
-    temp = util.tempdir()
+    temp = utils.tempdir()
     s = te.create_schedule(B.op)
     xo, xi = s[B].split(B.op.axis[0], factor=64)
     s[B].bind(xi, te.thread_axis("threadIdx.x"))
@@ -88,22 +88,22 @@ def test_rpc_module():
 
     # connect to the proxy
     remote = rpc.connect(proxy_host, proxy_port, key=key)
-    ctx = remote.metal(0)
+    dev = remote.metal(0)
     f1 = remote.load_module("dev_lib.dylib")
     a_np = np.random.uniform(size=1024).astype(A.dtype)
-    a = tvm.nd.array(a_np, ctx)
-    b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), ctx)
-    time_f = f1.time_evaluator(f1.entry_name, ctx, number=10)
+    a = tvm.nd.array(a_np, dev)
+    b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), dev)
+    time_f = f1.time_evaluator(f1.entry_name, dev, number=10)
     cost = time_f(a, b).mean
     print("%g secs/op" % cost)
     np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)
     # CPU
-    ctx = remote.cpu(0)
+    dev = remote.cpu(0)
     f2 = remote.load_module("cpu_lib.dylib")
     a_np = np.random.uniform(size=1024).astype(A.dtype)
-    a = tvm.nd.array(a_np, ctx)
-    b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), ctx)
-    time_f = f2.time_evaluator(f1.entry_name, ctx, number=10)
+    a = tvm.nd.array(a_np, dev)
+    b = tvm.nd.array(np.zeros(1024, dtype=A.dtype), dev)
+    time_f = f2.time_evaluator(f1.entry_name, dev, number=10)
     cost = time_f(a, b).mean
     print("%g secs/op" % cost)
     np.testing.assert_equal(b.asnumpy(), a.asnumpy() + 1)

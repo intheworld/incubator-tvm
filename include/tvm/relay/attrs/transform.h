@@ -54,7 +54,7 @@ struct ExpandDimsAttrs : public tvm::AttrsNode<ExpandDimsAttrs> {
         "If `axis < 0`, it is the first axis inserted;"
         "If `axis >= 0`, it is the last axis inserted in Python's negative indexing.");
     TVM_ATTR_FIELD(num_newaxis)
-        .describe("Number of axises to be inserted. Should be >= 0.")
+        .describe("Number of axes to be inserted. Should be >= 0.")
         .set_lower_bound(0)
         .set_default(1);
   }
@@ -83,15 +83,31 @@ struct TransposeAttrs : public tvm::AttrsNode<TransposeAttrs> {
 /*! \brief Attributes used in reshape operators */
 struct ReshapeAttrs : public tvm::AttrsNode<ReshapeAttrs> {
   Array<Integer> newshape;
-  bool reverse;
   TVM_DECLARE_ATTRS(ReshapeAttrs, "relay.attrs.ReshapeAttrs") {
     TVM_ATTR_FIELD(newshape).describe(
         "The new shape. Should be compatible with the original shape.");
-    TVM_ATTR_FIELD(reverse)
-        .describe("Infer the special values from right to left if true")
-        .set_default(false);
   }
 };  // struct ReshapeAttrs
+
+/*! \brief Attributes used in MXNet-style reshape_like operators */
+struct ReshapeLikeAttrs : public tvm::AttrsNode<ReshapeLikeAttrs> {
+  int lhs_begin;
+  Integer lhs_end;  // can be None
+  int rhs_begin;
+  Integer rhs_end;  // can be None
+  TVM_DECLARE_ATTRS(ReshapeLikeAttrs, "relay.attrs.ReshapeLikeAttrs") {
+    TVM_ATTR_FIELD(lhs_begin).set_default(0).describe(
+        "The axis of the input where reshaping should begin.");
+    TVM_ATTR_FIELD(lhs_end)
+        .set_default(NullValue<Integer>())
+        .describe("The axis of the input where reshaping should end, exclusive.");
+    TVM_ATTR_FIELD(rhs_begin).set_default(0).describe(
+        "The axis of the shape_like tensor to begin taking dimensions from.");
+    TVM_ATTR_FIELD(rhs_end)
+        .set_default(NullValue<Integer>())
+        .describe("The axis of the shape_like tensor to end taking dimensions from, exclusive.");
+  }
+};  // struct ReshapeLikeAttrs
 
 struct ScatterAttrs : public tvm::AttrsNode<ScatterAttrs> {
   Integer axis;
@@ -109,6 +125,15 @@ struct ScatterAddAttrs : public tvm::AttrsNode<ScatterAddAttrs> {
   }
 };
 
+struct ScatterNDAttrs : public tvm::AttrsNode<ScatterNDAttrs> {
+  String mode;
+
+  TVM_DECLARE_ATTRS(ScatterNDAttrs, "relay.attrs.ScatterNDAttrs") {
+    TVM_ATTR_FIELD(mode).describe(
+        "Accumulation mode of the scatter, either \"update\" or \"add\".");
+  }
+};
+
 struct GatherAttrs : public tvm::AttrsNode<GatherAttrs> {
   Integer axis;
 
@@ -120,10 +145,14 @@ struct GatherAttrs : public tvm::AttrsNode<GatherAttrs> {
 };
 
 struct TakeAttrs : public tvm::AttrsNode<TakeAttrs> {
+  Integer batch_dims;
   Integer axis;
   std::string mode;
 
   TVM_DECLARE_ATTRS(TakeAttrs, "relay.attrs.TakeAttrs") {
+    TVM_ATTR_FIELD(batch_dims)
+        .set_default(0)
+        .describe("The batch_dims over which to select values.");
     TVM_ATTR_FIELD(axis)
         .set_default(NullValue<Integer>())
         .describe("The axis over which to select values.");
@@ -330,6 +359,20 @@ struct LayoutTransformAttrs : public tvm::AttrsNode<LayoutTransformAttrs> {
   }
 };
 
+/*! \brief Attributes for AutoSchedulerLayoutTransform operator */
+struct AutoSchedulerLayoutTransformAttrs
+    : public tvm::AttrsNode<AutoSchedulerLayoutTransformAttrs> {
+  std::string src_layout;
+  std::string dst_layout;
+
+  TVM_DECLARE_ATTRS(AutoSchedulerLayoutTransformAttrs,
+                    "relay.attrs.AutoSchedulerLayoutTransformAttrs") {
+    TVM_ATTR_FIELD(src_layout).describe("The source layout of the tensor. (e.g. 1N32C112H112W)");
+    TVM_ATTR_FIELD(dst_layout)
+        .describe("The destination layout of the tensor. (e.g. 1N2C112H112W16c)");
+  }
+};
+
 /*! \brief Attributes for ShapeOf operator */
 struct ShapeOfAttrs : public tvm::AttrsNode<ShapeOfAttrs> {
   DataType dtype;
@@ -399,6 +442,34 @@ struct MatrixSetDiagAttrs : public tvm::AttrsNode<MatrixSetDiagAttrs> {
         .describe("Bool, true iff sub-diagonal is right aligned (left-padded).");
   }
 };  // struct MatrixSetDiagAttrs
+
+/*! \brief Attributes used in cumsum and cumprod operator */
+struct ScanopAttrs : public tvm::AttrsNode<ScanopAttrs> {
+  Integer axis;
+  DataType dtype;
+  Bool exclusive = Bool(false);
+  TVM_DECLARE_ATTRS(ScanopAttrs, "relay.attrs.ScanopAttrs") {
+    TVM_ATTR_FIELD(axis).describe("The axis to operate over").set_default(NullValue<Integer>());
+    TVM_ATTR_FIELD(dtype).describe("Output data type").set_default(NullValue<DataType>());
+
+    // Default is 0 which is "false"
+    TVM_ATTR_FIELD(exclusive)
+        .describe("The first element is not included")
+        .set_default(Bool(false));
+  }
+};
+
+/*! \brief Attributes used in unique operator */
+struct UniqueAttrs : public tvm::AttrsNode<UniqueAttrs> {
+  bool sorted;
+  bool return_counts;
+  TVM_DECLARE_ATTRS(UniqueAttrs, "relay.attrs.UniqueAttrs") {
+    TVM_ATTR_FIELD(sorted).describe("Whether the unique elements are sorted").set_default(true);
+    TVM_ATTR_FIELD(return_counts)
+        .describe("Whether to return an additional tensor with counts of each unique elements")
+        .set_default(false);
+  }
+};  // struct UniqueAttrs
 
 }  // namespace relay
 }  // namespace tvm

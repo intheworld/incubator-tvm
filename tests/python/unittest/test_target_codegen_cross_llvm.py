@@ -21,7 +21,7 @@ from tvm import te
 import os
 import struct
 from tvm import rpc
-from tvm.contrib import util, cc
+from tvm.contrib import utils, cc
 import numpy as np
 
 
@@ -46,7 +46,7 @@ def test_llvm_add_pipeline():
             assert struct.unpack(endian + "h", arr[0x12:0x14])[0] == e_machine
 
     def build_i386():
-        temp = util.tempdir()
+        temp = utils.tempdir()
         target = "llvm -mtriple=i386-pc-linux-gnu"
         f = tvm.build(s, [A, B, C], target)
         path = temp.relpath("myadd.o")
@@ -58,7 +58,7 @@ def test_llvm_add_pipeline():
         if not tvm.runtime.enabled(target):
             print("Skip because %s is not enabled.." % target)
             return
-        temp = util.tempdir()
+        temp = utils.tempdir()
         f = tvm.build(s, [A, B, C], target)
         path = temp.relpath("myadd.o")
         f.save(path)
@@ -78,11 +78,11 @@ def test_llvm_add_pipeline():
         if remote:
             remote.upload(path)
             farm = remote.load_module("myadd.o")
-            ctx = remote.cpu(0)
+            dev = remote.cpu(0)
             n = nn
-            a = tvm.nd.array(np.random.uniform(size=n).astype(A.dtype), ctx)
-            b = tvm.nd.array(np.random.uniform(size=n).astype(A.dtype), ctx)
-            c = tvm.nd.array(np.zeros(n, dtype=C.dtype), ctx)
+            a = tvm.nd.array(np.random.uniform(size=n).astype(A.dtype), dev)
+            b = tvm.nd.array(np.random.uniform(size=n).astype(A.dtype), dev)
+            c = tvm.nd.array(np.zeros(n, dtype=C.dtype), dev)
             farm(a, b, c)
             tvm.testing.assert_allclose(c.asnumpy(), a.asnumpy() + b.asnumpy())
             print("Verification finish on remote..")

@@ -29,10 +29,10 @@ from tvm.relay import testing, create_executor
 def check_eval(expr, args, expected_result, mod=None, rtol=1e-07):
     # TODO(tqchen) add more types once the schedule register is fixed.
     for target in ["llvm"]:
-        ctx = tvm.context(target, 0)
+        dev = tvm.device(target, 0)
         if not tvm.testing.device_enabled(target):
             return
-        intrp = create_executor(mod=mod, ctx=ctx, target=target)
+        intrp = create_executor(mod=mod, device=dev, target=target)
         result = intrp.evaluate(expr)(*args)
         # use tvm.testing which also set atol
         tvm.testing.assert_allclose(result.asnumpy(), expected_result, rtol=rtol)
@@ -170,12 +170,13 @@ def test_function_taking_adt_ref_tuple():
     mod = tvm.IRModule()
     prelude = relay.prelude.Prelude(mod)
     intrp = create_executor("debug", mod)
+    _, cons, nil = prelude.mod.get_type("List")
 
-    nil_value = ConstructorValue(prelude.nil.tag, [], prelude.nil)
+    nil_value = ConstructorValue(nil.tag, [], nil)
     cons_value = ConstructorValue(
-        prelude.cons.tag,
+        cons.tag,
         [nd.array(np.random.rand(1, 10).astype("float32")), nil_value],
-        prelude.cons,
+        cons,
     )
 
     ref_value = RefValue(nd.array(np.random.rand(1, 10).astype("float32")))
@@ -194,7 +195,7 @@ def test_function_taking_adt_ref_tuple():
     assert len(res_cons.fields) == len(cons_value.fields)
     tvm.testing.assert_allclose(res_cons.fields[0].asnumpy(), cons_value.fields[0].asnumpy())
     assert isinstance(res_cons.fields[1], ConstructorValue)
-    assert res_cons.fields[1].tag == prelude.nil.tag
+    assert res_cons.fields[1].tag == nil.tag
     assert len(res_cons.fields[1].fields) == 0
 
     res_ref = id_func(ref_value)
@@ -219,9 +220,9 @@ def test_tuple_passing():
     mod[gv] = fn
     mod = relay.transform.InferType()(mod)
 
-    ctx = tvm.cpu()
+    dev = tvm.cpu()
     target = tvm.target.Target("llvm")
-    exec = relay.create_executor(mod=mod, ctx=ctx, target=target)
+    exec = relay.create_executor(mod=mod, device=dev, target=target)
     f = exec.evaluate(gv)
     # First use a Python tuple.
     out = f((10, 8))

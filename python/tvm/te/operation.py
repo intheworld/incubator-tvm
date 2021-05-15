@@ -17,6 +17,7 @@
 """ Operation class for computation declaration."""
 # pylint: disable=invalid-name
 from numbers import Integral as _Integral
+from typing import List
 
 import tvm._ffi
 import tvm.tir
@@ -317,14 +318,18 @@ def extern(
     if isinstance(body, tvm.tir.PrimExpr):
         body = tvm.tir.Evaluate(body)
     if not isinstance(body, tvm.tir.Stmt):
-        raise ValueError("Function '{}' should return PrimExpr or Stmt".format(fcompute.__name__))
+        raise ValueError(
+            "Function '{}' should return PrimExpr or Stmt, but it returned '{}'".format(
+                fcompute.__name__, type(body)
+            )
+        )
 
     op = _ffi_api.ExternOp(name, tag, attrs, inputs, input_placeholders, output_placeholders, body)
     res = [op.output(i) for i in range(len(output_placeholders))]
     return res[0] if len(res) == 1 else res
 
 
-def var(name="tindex", dtype="int32"):
+def var(name="tindex", dtype="int32", span=None):
     """Create a new variable with specified name and dtype
 
     Parameters
@@ -335,15 +340,18 @@ def var(name="tindex", dtype="int32"):
     dtype : str
         The data type
 
+    span : Optional[Span]
+        The location of this variable in the source.
+
     Returns
     -------
     var : Var
         The result symbolic variable.
     """
-    return tvm.tir.Var(name, dtype)
+    return tvm.tir.Var(name, dtype, span)
 
 
-def size_var(name="size", dtype="int32"):
+def size_var(name="size", dtype="int32", span=None):
     """Create a new variable represents a tensor shape size, which is non-negative.
 
     Parameters
@@ -354,15 +362,18 @@ def size_var(name="size", dtype="int32"):
     dtype : str
         The data type
 
+    span : Optional[Span]
+        The location of this variable in the source.
+
     Returns
     -------
     var : SizeVar
         The result symbolic shape variable.
     """
-    return tvm.tir.SizeVar(name, dtype)
+    return tvm.tir.SizeVar(name, dtype, span)
 
 
-def thread_axis(dom=None, tag="", name=""):
+def thread_axis(dom=None, tag="", name="", span=None):
     """Create a new IterVar to represent thread index.
 
     Parameters
@@ -377,6 +388,9 @@ def thread_axis(dom=None, tag="", name=""):
     name : str, optional
         The name of the var.
 
+    span : Optional[Span]
+        The location of this variable in the source.
+
     Returns
     -------
     axis : IterVar
@@ -387,10 +401,10 @@ def thread_axis(dom=None, tag="", name=""):
     if not tag:
         raise ValueError("tag must be given as Positional or keyword argument")
     name = name if name else tag
-    return tvm.tir.IterVar(dom, name, 1, tag)
+    return tvm.tir.IterVar(dom, name, 1, tag, span)
 
 
-def reduce_axis(dom, name="rv"):
+def reduce_axis(dom, name="rv", thread_tag="", span=None):
     """Create a new IterVar for reduction.
 
     Parameters
@@ -401,9 +415,64 @@ def reduce_axis(dom, name="rv"):
     name : str
         The name of the variable.
 
+    thread_tag : Optional[str]
+        The name of the thread_tag.
+
+    span : Optional[Span]
+        The location of this variable in the source.
+
     Returns
     -------
     axis : IterVar
         An iteration variable representing the value.
     """
-    return tvm.tir.IterVar(dom, name, 2)
+    return tvm.tir.IterVar(dom, name, 2, thread_tag, span)
+
+
+def create_prim_func(ops: List[_tensor.Tensor]) -> tvm.tir.PrimFunc:
+    """Create a TensorIR PrimFunc from tensor expression
+    Parameters
+    ----------
+    ops : List[Tensor]
+        The source expression.
+
+    Example
+    -------
+    We define a matmul kernel using following code:
+
+    .. code-block:: python
+
+        import tvm
+        from tvm import te
+
+        A = te.placeholder((128, 128), name="A")
+        B = te.placeholder((128, 128), name="B")
+        C = te.compute((128, 128), lambda x, y: te.sum(A[x, k] * B[y, k], axis=k), name="C")
+        func = create_prim_func([A, B, C])
+        print(tvm.script.asscript(func))
+
+    If we want to use TensorIR schedule to do transformations on such kernel,
+    we need to use `create_prim_func([A, B, C])` to create a schedulable PrimFunc.
+    The generated function looks like:
+
+    .. code-block:: python
+
+        @tvm.script.tir
+        def tir_matmul(a: ty.handle, b: ty.handle, c: ty.handle) -> None:
+            A = tir.match_buffer(a, (128, 128))
+            B = tir.match_buffer(b, (128, 128))
+            C = tir.match_buffer(c, (128, 128))
+
+            with tir.block([128, 128, tir.reduce_axis(0, 128)]) as [i, j, k]:
+                with tir.init():
+                    C[i, j] = 0.0
+                C[i, j] += A[i, k] * B[j, k]
+
+    Returns
+    -------
+    func : tir.PrimFunc
+        The created function.
+    """
+    if not isinstance(ops, list):
+        ops = [ops]
+    return _ffi_api.CreatePrimFunc(ops)

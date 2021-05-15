@@ -25,18 +25,18 @@
 #define TVM_RUNTIME_CONTRIB_CUDNN_CUDNN_UTILS_H_
 
 #include <cudnn.h>
-#include <dmlc/logging.h>
 #include <tvm/runtime/device_api.h>
+#include <tvm/runtime/logging.h>
 
 #include "../../cuda/cuda_common.h"
 
 namespace tvm {
 namespace contrib {
 
-#define CUDNN_CALL(func)                                                      \
-  {                                                                           \
-    cudnnStatus_t e = (func);                                                 \
-    CHECK_EQ(e, CUDNN_STATUS_SUCCESS) << "cuDNN: " << cudnnGetErrorString(e); \
+#define CUDNN_CALL(func)                                                       \
+  {                                                                            \
+    cudnnStatus_t e = (func);                                                  \
+    ICHECK_EQ(e, CUDNN_STATUS_SUCCESS) << "cuDNN: " << cudnnGetErrorString(e); \
   }
 
 /*! breif Convert DLTensor type to CuDNN type */
@@ -72,7 +72,7 @@ struct ConvEntry {
   cudnnTensorDescriptor_t output_desc;
   cudnnConvolutionFwdAlgo_t fwd_algo;
   // cudnnMathType_t math_type;
-  TVMContext ctx;
+  Device device;
   runtime::DeviceAPI* cuda_api;
   void* workspace{nullptr};
   size_t workspace_size{0};

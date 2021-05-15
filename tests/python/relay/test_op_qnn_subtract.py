@@ -45,13 +45,14 @@ def qnn_subtract_driver(x_datas, y_datas, golden_outputs, scale_and_zp, data_dty
     )
     func = relay.Function([x, y], z)
     mod = tvm.IRModule.from_expr(func)
+    mod = relay.transform.InferType()(mod)
     mod = relay.qnn.transform.CanonicalizeOps()(mod)
     func = mod["main"]
     for i in range(0, len(x_datas)):
         x_data = x_datas[i]
         y_data = y_datas[i]
         golden_output = golden_outputs[i]
-        intrp = relay.create_executor("graph", ctx=tvm.cpu(0), target="llvm")
+        intrp = relay.create_executor("graph", device=tvm.cpu(0), target="llvm")
         op_res = intrp.evaluate(func)(x_data, y_data)
         np.testing.assert_equal(op_res.asnumpy(), golden_output)
 

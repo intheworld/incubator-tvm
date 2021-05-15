@@ -19,7 +19,7 @@
 import tvm
 from tvm import te
 from tvm import autotvm
-from ..util import get_const_tuple
+from ..utils import get_const_tuple
 
 
 def schedule_conv2d_nhwc_direct(cfg, s, Conv):
@@ -129,4 +129,6 @@ def schedule_conv2d_nhwc_direct(cfg, s, Conv):
 
     N, OH, OW, CO = get_const_tuple(output.shape)
     KH, KW, CI, _ = get_const_tuple(kernel.shape)
-    cfg.add_flop(2 * N * OH * OW * CO * CI * KH * KW)
+
+    if isinstance(N, int):
+        cfg.add_flop(2 * N * OH * OW * CO * CI * KH * KW)

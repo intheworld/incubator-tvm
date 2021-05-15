@@ -48,6 +48,8 @@ def get_valid_counts(data, score_threshold, id_index=0, score_index=1):
     out_indices: relay.Expr
         Indices in input data
     """
+    if not isinstance(score_threshold, expr.Expr):
+        score_threshold = expr.const(score_threshold, "float32")
     return expr.TupleWrapper(
         _make.get_valid_counts(data, score_threshold, id_index, score_index), 3
     )
@@ -94,7 +96,7 @@ def non_max_suppression(
         Max number of output valid boxes for each instance.
         Return all valid boxes if the value of max_output_size is less than 0.
 
-    iou_threshold : float, optional
+    iou_threshold : float or relay.Expr, optional
         Non-maximum suppression threshold.
 
     force_suppress : bool, optional
@@ -126,8 +128,10 @@ def non_max_suppression(
         If return_indices is True, return relay.Tuple of two 2-D tensors, with
         shape [batch_size, num_anchors] and [batch_size, num_valid_anchors] respectively.
     """
-    if isinstance(max_output_size, int):
+    if not isinstance(max_output_size, expr.Expr):
         max_output_size = expr.const(max_output_size, "int32")
+    if not isinstance(iou_threshold, expr.Expr):
+        iou_threshold = expr.const(iou_threshold, "float32")
     out = _make.non_max_suppression(
         data,
         valid_count,
@@ -145,3 +149,51 @@ def non_max_suppression(
     if return_indices:
         return expr.TupleWrapper(out, 2)
     return out
+
+
+def all_class_non_max_suppression(
+    boxes, scores, max_output_boxes_per_class=-1, iou_threshold=-1.0, score_threshold=-1.0
+):
+    """Non-maximum suppression operator for object detection, corresponding to ONNX
+    NonMaxSuppression and TensorFlow combined_non_max_suppression.
+    NMS is performed for each class separately.
+
+    Parameters
+    ----------
+    boxes : relay.Expr
+        3-D tensor with shape (batch_size, num_boxes, 4)
+
+    scores: relay.Expr
+        3-D tensor with shape (batch_size, num_classes, num_boxes)
+
+    max_output_boxes_per_class : int or relay.Expr, optional
+        The maxinum number of output selected boxes per class
+
+    iou_threshold : float or relay.Expr, optionaIl
+        IoU test threshold
+
+    score_threshold : float or relay.Expr, optional
+        Score threshold to filter out low score boxes early
+
+    Returns
+    -------
+    out : relay.Tuple
+        The output is a relay.Tuple of two tensors, the first is `indices` of size
+        `(batch_size * num_class* num_boxes , 3)` and the second is a scalar tensor
+        `num_total_detection` of shape `(1,)` representing the total number of selected boxes.
+        Rows of `indices` are ordered such that selected boxes from batch 0, class 0 come first,
+        in descending of scores, followed by boxes from batch 0, class 1 etc. Out of
+        `batch_size * num_class* num_boxes` rows of indices,  only the first `num_total_detection`
+        rows are valid.
+    """
+    if not isinstance(max_output_boxes_per_class, expr.Expr):
+        max_output_boxes_per_class = expr.const(max_output_boxes_per_class, "int32")
+    if not isinstance(iou_threshold, expr.Expr):
+        iou_threshold = expr.const(iou_threshold, "float32")
+    if not isinstance(score_threshold, expr.Expr):
+        score_threshold = expr.const(score_threshold, "float32")
+
+    out = _make.all_class_non_max_suppression(
+        boxes, scores, max_output_boxes_per_class, iou_threshold, score_threshold
+    )
+    return expr.TupleWrapper(out, 2)

@@ -24,8 +24,8 @@ import tvm.topi.testing
 from tvm import te
 from tvm.contrib.pickle_memoize import memoize
 from tvm.contrib import nvcc
-from tvm.topi.nn.util import get_pad_tuple3d
-from tvm.topi.util import get_const_tuple
+from tvm.topi.nn.utils import get_pad_tuple3d
+from tvm.topi.utils import get_const_tuple
 import tvm.testing
 
 
@@ -85,7 +85,7 @@ def verify_conv3d_ndhwc(
     a_np, w_np, b_np, c_np = get_ref_data()
 
     def check_device(device):
-        ctx = tvm.context(device, 0)
+        dev = tvm.device(device, 0)
         print("Running on target: %s" % device)
         with tvm.target.Target(device):
             fcompute, fschedule = tvm.topi.testing.dispatch(
@@ -98,10 +98,10 @@ def verify_conv3d_ndhwc(
                 C = topi.nn.relu(C)
             s = fschedule([C])
 
-        a = tvm.nd.array(a_np, ctx)
-        w = tvm.nd.array(w_np, ctx)
-        b = tvm.nd.array(b_np, ctx)
-        c = tvm.nd.array(np.zeros(get_const_tuple(C.shape), dtype=C.dtype), ctx)
+        a = tvm.nd.array(a_np, dev)
+        w = tvm.nd.array(w_np, dev)
+        b = tvm.nd.array(b_np, dev)
+        c = tvm.nd.array(np.zeros(get_const_tuple(C.shape), dtype=C.dtype), dev)
         if add_bias:
             func = tvm.build(
                 s,

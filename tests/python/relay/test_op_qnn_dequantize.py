@@ -19,7 +19,8 @@ import tvm
 from tvm import te
 import numpy as np
 from tvm import relay
-from tvm.contrib import graph_runtime
+from tvm.contrib import graph_executor
+from tvm.relay.testing import run_infer_type
 
 
 def dequantize_test_driver(in_dtype, quant_args, in_data, verify_output_data, axis):
@@ -34,7 +35,7 @@ def dequantize_test_driver(in_dtype, quant_args, in_data, verify_output_data, ax
     mod = tvm.IRModule.from_expr(mod)
     with tvm.transform.PassContext(opt_level=3):
         graph, lib, params = relay.build(mod, "llvm", params=None)
-        rt_mod = graph_runtime.create(graph, lib, ctx=tvm.cpu(0))
+        rt_mod = graph_executor.create(graph, lib, device=tvm.cpu(0))
         rt_mod.set_input(input_data=in_data)
         rt_mod.set_input(**params)
         rt_mod.run()
@@ -97,8 +98,51 @@ def test_channelwise_axis_1():
     }
 
     dequantize_test_driver(
-        in_dtype="uint8", quant_args=quant_args, in_data=data, verify_output_data=output, axis=1
+        in_dtype="uint8", quant_args=quant_args, in_data=data, verify_output_data=output, axis=-1
     )
+
+
+def test_channelwise_axis_0():
+    data = np.array([0, 1, 2, 3, 4, 243, 247, 249, 250, 251]).astype("uint8").reshape((2, 5))
+    output = (
+        np.array([-63.5, -63, -62.5, -62, -61.5, 30, 31, 31.5, 31.75, 32])
+        .astype("float32")
+        .reshape((2, 5))
+    )
+    quant_args = {
+        "in_zero_point": np.array([127, 123]).astype("int32"),
+        "in_scale": np.array([0.5, 0.25]).astype("float32"),
+    }
+
+    dequantize_test_driver(
+        in_dtype="uint8", quant_args=quant_args, in_data=data, verify_output_data=output, axis=0
+    )
+
+
+def test_dynamic_dequantize():
+    x = relay.var("x", shape=(1, 2, 3, 4), dtype="int8")
+    scale_var = relay.var("scale", shape=(), dtype="float32")
+    zp_var = relay.var("zp", shape=(), dtype="int32")
+
+    deq_x = relay.qnn.op.dequantize(x, scale_var * scale_var, zp_var + zp_var)
+    tt = run_infer_type(deq_x)
+
+    assert tt.checked_type == relay.TensorType((1, 2, 3, 4), "float32")
+    func = relay.Function([x, scale_var, zp_var], deq_x)
+    data = np.random.uniform(size=(1, 2, 3, 4)).astype("int8")
+    scale = np.array(1).astype("float32")
+    zp = np.array(0).astype("int32")
+
+    mod = tvm.ir.IRModule.from_expr(func)
+
+    for target, dev in tvm.testing.enabled_targets():
+        # TODO: (electriclilies) enable AlterOpLayout when it is fixed
+        with relay.build_config(opt_level=3, disabled_pass=["AlterOpLayout"]):
+            lib = relay.build(mod, target=target)
+
+    module = graph_executor.GraphModule(lib["default"](dev))
+    module.set_input(**{"x": data, "scale": scale, "zp": zp})
+    module.run()
 
 
 if __name__ == "__main__":
@@ -106,3 +150,5 @@ if __name__ == "__main__":
     test_int8_to_float32()
     test_int32_to_float32()
     test_channelwise_axis_1()
+    test_channelwise_axis_0()
+    test_dynamic_dequantize()

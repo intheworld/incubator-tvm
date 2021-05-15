@@ -25,7 +25,7 @@ import warnings
 import tvm._ffi
 from tvm.runtime import ndarray as nd
 
-from . import util
+from . import utils
 from .._ffi.base import py_str
 
 
@@ -54,7 +54,7 @@ def compile_cuda(code, target="ptx", arch=None, options=None, path_target=None):
     cubin : bytearray
         The bytearray of the cubin
     """
-    temp = util.tempdir()
+    temp = utils.tempdir()
     if target not in ["cubin", "ptx", "fatbin"]:
         raise ValueError("target must be in cubin, ptx, fatbin")
     temp_code = temp.relpath("my_kernel.cu")
@@ -64,9 +64,9 @@ def compile_cuda(code, target="ptx", arch=None, options=None, path_target=None):
         out_file.write(code)
 
     if arch is None:
-        if nd.gpu(0).exist:
+        if nd.cuda(0).exist:
             # auto detect the compute arch argument
-            arch = "sm_" + "".join(nd.gpu(0).compute_version.split("."))
+            arch = "sm_" + "".join(nd.cuda(0).compute_version.split("."))
         else:
             raise ValueError("arch(sm_xy) is not passed, and we cannot detect it from env")
 
@@ -88,6 +88,14 @@ def compile_cuda(code, target="ptx", arch=None, options=None, path_target=None):
 
     cmd += ["-o", file_target]
     cmd += [temp_code]
+
+    # NOTE: ccbin option can be used to tell nvcc where to find the c++ compiler
+    # just in case it is not in the path. On Windows it is not in the path by default.
+    # However, we cannot use TVM_CXX_COMPILER_PATH because the runtime env.
+    # Because it is hard to do runtime compiler detection, we require nvcc is configured
+    # correctly by default.
+    # if cxx_compiler_path != "":
+    #    cmd += ["-ccbin", cxx_compiler_path]
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
@@ -148,8 +156,20 @@ def get_cuda_version(cuda_path):
         with open(version_file_path) as f:
             version_str = f.readline().replace("\n", "").replace("\r", "")
             return float(version_str.split(" ")[2][:2])
-    except:
-        raise RuntimeError("Cannot read cuda version file")
+    except FileNotFoundError:
+        pass
+
+    cmd = [os.path.join(cuda_path, "bin", "nvcc"), "--version"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    (out, _) = proc.communicate()
+    out = py_str(out)
+    if proc.returncode == 0:
+        release_line = [l for l in out.split("\n") if "release" in l][0]
+        release_fields = [s.strip() for s in release_line.split(",")]
+        release_version = [f[1:] for f in release_fields if f.startswith("V")][0]
+        major_minor = ".".join(release_version.split(".")[:2])
+        return float(major_minor)
+    raise RuntimeError("Cannot read cuda version file")
 
 
 @tvm._ffi.register_func("tvm_callback_libdevice_path")
@@ -174,7 +194,7 @@ def find_libdevice_path(arch):
     selected_ver = 0
     selected_path = None
     cuda_ver = get_cuda_version(cuda_path)
-    if cuda_ver in (9.0, 9.1, 10.0, 10.1, 10.2, 11.0):
+    if cuda_ver in (9.0, 9.1, 10.0, 10.1, 10.2, 11.0, 11.1, 11.2):
         path = os.path.join(lib_path, "libdevice.10.bc")
     else:
         for fn in os.listdir(lib_path):
@@ -198,6 +218,47 @@ def callback_libdevice_path(arch):
         return ""
 
 
+def get_target_compute_version(target=None):
+    """Utility function to get compute capability of compilation target.
+
+    Looks for the arch in three different places, first in the target attributes, then the global
+    scope, and finally the GPU device (if it exists).
+
+    Parameters
+    ----------
+    target : tvm.target.Target, optional
+        The compilation target
+
+    Returns
+    -------
+    compute_version : str
+        compute capability of a GPU (e.g. "8.0")
+    """
+    # 1. Target
+    if target:
+        if "arch" in target.attrs:
+            compute_version = target.attrs["arch"]
+            major, minor = compute_version.split("_")[1]
+            return major + "." + minor
+
+    # 2. Global scope
+    from tvm.autotvm.env import AutotvmGlobalScope  # pylint: disable=import-outside-toplevel
+
+    if AutotvmGlobalScope.current.cuda_target_arch:
+        major, minor = AutotvmGlobalScope.current.cuda_target_arch.split("_")[1]
+        return major + "." + minor
+
+    # 3. GPU
+    if tvm.cuda(0).exist:
+        return tvm.cuda(0).compute_version
+
+    warnings.warn(
+        "No CUDA architecture was specified or GPU detected."
+        "Try specifying it by adding '-arch=sm_xx' to your target."
+    )
+    return None
+
+
 def parse_compute_version(compute_version):
     """Parse compute capability string to divide major and minor version
 
@@ -219,6 +280,7 @@ def parse_compute_version(compute_version):
         minor = int(split_ver[1])
         return major, minor
     except (IndexError, ValueError) as err:
+        # pylint: disable=raise-missing-from
         raise RuntimeError("Compute version parsing error: " + str(err))
 
 
@@ -256,16 +318,61 @@ def have_int8(compute_version):
     return False
 
 
-def have_tensorcore(compute_version):
+def have_tensorcore(compute_version=None, target=None):
     """Either TensorCore support is provided in the compute capability or not
 
     Parameters
     ----------
+    compute_version : str, optional
+        compute capability of a GPU (e.g. "7.0").
+
+    target : tvm.target.Target, optional
+        The compilation target, will be used to determine arch if compute_version
+        isn't specified.
+    """
+    if compute_version is None:
+        if tvm.cuda(0).exist:
+            compute_version = tvm.cuda(0).compute_version
+        else:
+            if target is None or "arch" not in target.attrs:
+                warnings.warn(
+                    "Tensorcore will be disabled due to no CUDA architecture specified."
+                    "Try specifying it by adding '-arch=sm_xx' to your target."
+                )
+                return False
+            compute_version = target.attrs["arch"]
+            # Compute version will be in the form "sm_{major}{minor}"
+            major, minor = compute_version.split("_")[1]
+            compute_version = major + "." + minor
+    major, _ = parse_compute_version(compute_version)
+    if major >= 7:
+        return True
+
+    return False
+
+
+def have_cudagraph():
+    """Either CUDA Graph support is provided"""
+    try:
+        cuda_path = find_cuda_path()
+        cuda_ver = get_cuda_version(cuda_path)
+        if cuda_ver < 10.0:
+            return False
+        return True
+    except RuntimeError:
+        return False
+
+
+def have_bf16(compute_version):
+    """Either bf16 support is provided in the compute capability or not
+
+    Parameters
+    ----------
     compute_version : str
-        compute capability of a GPU (e.g. "7.0")
+        compute capability of a GPU (e.g. "8.0")
     """
     major, _ = parse_compute_version(compute_version)
-    if major == 7:
+    if major >= 8:
         return True
 
     return False

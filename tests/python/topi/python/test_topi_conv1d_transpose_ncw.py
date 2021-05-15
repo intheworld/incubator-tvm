@@ -22,7 +22,7 @@ from tvm import te
 from tvm import topi
 import tvm.topi.testing
 from tvm.contrib.pickle_memoize import memoize
-from tvm.topi.util import get_const_tuple
+from tvm.topi.utils import get_const_tuple
 import tvm.testing
 
 _conv1d_transpose_ncw_implement = {
@@ -54,28 +54,28 @@ def verify_conv1d_transpose_ncw(
 
     a_np, w_np, b_np, c_np = get_ref_data()
 
-    def check_device(device, ctx):
-        ctx = tvm.context(device, 0)
-        with tvm.target.Target(device):
-            fcompute, fschedule = tvm.topi.testing.dispatch(device, _conv1d_transpose_ncw_implement)
+    def check_target(target, dev):
+        dev = tvm.device(target, 0)
+        with tvm.target.Target(target):
+            fcompute, fschedule = tvm.topi.testing.dispatch(target, _conv1d_transpose_ncw_implement)
             B = fcompute(A, W, stride, padding, A.dtype, output_padding)
             C = topi.nn.relu(B)
             s1 = fschedule([B])
             s2 = fschedule([C])
-        a = tvm.nd.array(a_np, ctx)
-        w = tvm.nd.array(w_np, ctx)
-        b = tvm.nd.array(np.zeros(get_const_tuple(B.shape), dtype=B.dtype), ctx)
-        c = tvm.nd.array(np.zeros(get_const_tuple(C.shape), dtype=C.dtype), ctx)
+        a = tvm.nd.array(a_np, dev)
+        w = tvm.nd.array(w_np, dev)
+        b = tvm.nd.array(np.zeros(get_const_tuple(B.shape), dtype=B.dtype), dev)
+        c = tvm.nd.array(np.zeros(get_const_tuple(C.shape), dtype=C.dtype), dev)
 
-        func1 = tvm.build(s1, [A, W, B], device)
-        func2 = tvm.build(s2, [A, W, C], device)
+        func1 = tvm.build(s1, [A, W, B], target)
+        func2 = tvm.build(s2, [A, W, C], target)
         func1(a, w, b)
         func2(a, w, c)
         tvm.testing.assert_allclose(b.asnumpy(), b_np, rtol=1e-5)
         tvm.testing.assert_allclose(c.asnumpy(), c_np, rtol=1e-5)
 
-    for device, ctx in tvm.testing.enabled_targets():
-        check_device(device, ctx)
+    for target, dev in tvm.testing.enabled_targets():
+        check_target(target, dev)
 
 
 @tvm.testing.uses_gpu
@@ -91,9 +91,13 @@ def test_conv1d_transpose_ncw():
     verify_conv1d_transpose_ncw(1, 1, 1024, 1, 512, 2, 256, (0,))
     verify_conv1d_transpose_ncw(1, 1, 1024, 1, 512, 5, 256, (0,))
     verify_conv1d_transpose_ncw(1, 1, 1024, 1, 512, 5, 256, (3,))
+    verify_conv1d_transpose_ncw(1, 2, 1024, 1, 128, 128, 0, (0,))
+    verify_conv1d_transpose_ncw(1, 1, 1024, 2, 128, 128, 0, (0,))
+    verify_conv1d_transpose_ncw(1, 1, 1024, 2, 2, 2, 0, (0,))
     verify_conv1d_transpose_ncw(1, 1, 10, 1, 5, 1, (0, 3), (0,))
     verify_conv1d_transpose_ncw(1, 1, 10, 1, 5, 1, (1, 3), (0,))
     verify_conv1d_transpose_ncw(1, 1, 10, 1, 5, 1, (2, 3), (0,))
+    verify_conv1d_transpose_ncw(1, 257, 128, 1, 512, 128, 256, (0,))
 
 
 if __name__ == "__main__":

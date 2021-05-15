@@ -33,7 +33,7 @@ A quick solution is
     pip install mxnet --user
 
 or please refer to offical installation guide.
-https://mxnet.incubator.apache.org/versions/master/install/index.html
+https://mxnet.apache.org/versions/master/install/index.html
 """
 # some standard imports
 import mxnet as mx
@@ -51,7 +51,7 @@ from PIL import Image
 from matplotlib import pyplot as plt
 
 block = get_model("resnet18_v1", pretrained=True)
-img_url = "https://github.com/dmlc/mxnet.js/blob/master/data/cat.png?raw=true"
+img_url = "https://github.com/dmlc/mxnet.js/blob/main/data/cat.png?raw=true"
 img_name = "cat.png"
 synset_url = "".join(
     [
@@ -104,11 +104,11 @@ with tvm.transform.PassContext(opt_level=3):
 # Execute the portable graph on TVM
 # ---------------------------------
 # Now, we would like to reproduce the same forward computation using TVM.
-from tvm.contrib import graph_runtime
+from tvm.contrib import graph_executor
 
-ctx = tvm.gpu(0)
+dev = tvm.cuda(0)
 dtype = "float32"
-m = graph_runtime.GraphModule(lib["default"](ctx))
+m = graph_executor.GraphModule(lib["default"](dev))
 # set inputs
 m.set_input("data", tvm.nd.array(x.astype(dtype)))
 # execute

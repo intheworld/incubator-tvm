@@ -56,9 +56,9 @@
 #ifndef TVM_IR_TRANSFORM_H_
 #define TVM_IR_TRANSFORM_H_
 
+#include <tvm/ir/diagnostic.h>
 #include <tvm/ir/error.h>
 #include <tvm/ir/module.h>
-#include <tvm/node/container.h>
 #include <tvm/runtime/container.h>
 #include <tvm/support/with.h>
 
@@ -84,11 +84,6 @@ using TraceFunc =
  */
 class PassContextNode : public Object {
  public:
-  /*!
-   * \brief The error reporter used to notify users why an optimization fails.
-   */
-  ErrorReporter err_reporter;
-
   /*! \brief The default optimization level. */
   int opt_level{2};
 
@@ -96,11 +91,12 @@ class PassContextNode : public Object {
   Array<String> required_pass;
   /*! \brief The list of disabled passes. */
   Array<String> disabled_pass;
-  /*! \brief Trace function to be invoked before and after each pass. */
-  TraceFunc trace_func;
-
+  /*! \brief The diagnostic context. */
+  mutable Optional<DiagnosticContext> diag_ctx;
   /*! \brief Pass specific configurations. */
   Map<String, ObjectRef> config;
+  /*! \brief Trace function to be invoked before and after each pass. */
+  TraceFunc trace_func;
 
   PassContextNode() = default;
 
@@ -139,6 +135,7 @@ class PassContextNode : public Object {
     v->Visit("required_pass", &required_pass);
     v->Visit("disabled_pass", &disabled_pass);
     v->Visit("config", &config);
+    v->Visit("diag_ctx", &diag_ctx);
   }
 
   static constexpr const char* _type_key = "transform.PassContext";
@@ -168,7 +165,7 @@ class PassContext : public ObjectRef {
    * \return const access pointer.
    */
   const PassContextNode* operator->() const {
-    CHECK(get() != nullptr);
+    ICHECK(get() != nullptr);
     return static_cast<const PassContextNode*>(get());
   }
   /*!
@@ -176,7 +173,7 @@ class PassContext : public ObjectRef {
    * \return mutable access pointer.
    */
   PassContextNode* operator->() {
-    CHECK(get() != nullptr);
+    ICHECK(get() != nullptr);
     return static_cast<PassContextNode*>(get_mutable());
   }
 
@@ -198,6 +195,13 @@ class PassContext : public ObjectRef {
    * \param is_before Indicated whether the tracing is before or after a pass.
    */
   TVM_DLL void Trace(const IRModule& module, const PassInfo& info, bool is_before) const;
+
+  /*!
+   * \brief Check whether a pass is enabled.
+   * \param info The pass information.
+   * \return true if the pass is enabled. Otherwise, false.
+   */
+  TVM_DLL bool PassEnabled(const PassInfo& info) const;
 
   /*!
    * \brief Register a valid configuration option and its ValueType for validation.
@@ -344,11 +348,8 @@ class Pass : public ObjectRef {
    *
    * \return The transformed module.
    */
-  IRModule operator()(IRModule mod) const {
-    const PassNode* node = operator->();
-    CHECK(node != nullptr);
-    return node->operator()(std::move(mod));
-  }
+  IRModule operator()(IRModule mod) const;
+
   /*!
    * \brief Transform mod using a functor under a given pass context.
    *
@@ -357,11 +358,7 @@ class Pass : public ObjectRef {
    *
    * \return The transformed module.
    */
-  IRModule operator()(IRModule mod, const PassContext& pass_ctx) const {
-    const PassNode* node = operator->();
-    CHECK(node != nullptr);
-    return node->operator()(std::move(mod), pass_ctx);
-  }
+  IRModule operator()(IRModule mod, const PassContext& pass_ctx) const;
 
   TVM_DEFINE_OBJECT_REF_METHODS(Pass, ObjectRef, PassNode);
 };

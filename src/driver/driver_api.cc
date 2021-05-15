@@ -69,7 +69,8 @@ Target DefaultTargetHost(Target target) {
 
 tir::Buffer BufferWithOffsetAlignment(Array<PrimExpr> shape, DataType dtype, std::string name,
                                       int data_alignment, int offset_factor, bool compact) {
-  auto data = tir::Var(name, PointerType(PrimType(dtype)));
+  DataType storage_dtype = (dtype == DataType::Bool() ? DataType::Int(8) : dtype);
+  auto data = tir::Var(name, PointerType(PrimType(storage_dtype)));
   bool has_any = false;
   if (!compact) {
     for (const auto& it : shape) {
@@ -184,9 +185,11 @@ IRModule lower(te::Schedule sch, const Array<te::Tensor>& args, const std::strin
   return mod;
 }
 
-std::pair<IRModule, IRModule> SplitDevHostFuncs(IRModule mod_mixed, const Target& target,
-                                                const Target& target_host,
+std::pair<IRModule, IRModule> SplitDevHostFuncs(IRModule mod_mixed, const Target& target_arg,
+                                                const Target& target_host_arg,
                                                 const transform::PassContext& pass_ctx) {
+  Target target = target_arg, target_host = target_host_arg;
+  CheckAndUpdateHostConsistency(&target, &target_host);
   Array<tvm::transform::Pass> mixed_pass_list = {BindTarget(target),
                                                  tir::transform::VerifyMemory()};
 
@@ -209,11 +212,13 @@ std::pair<IRModule, IRModule> SplitDevHostFuncs(IRModule mod_mixed, const Target
       }),
       BindTarget(target_host),
       tir::transform::LowerTVMBuiltin(),
+      tir::transform::LowerCustomDatatypes(),
       tir::transform::LowerIntrin(),
       tir::transform::LowerDeviceStorageAccessInfo(),
       tir::transform::CombineContextCall(),
   };
   auto opt_host = transform::Sequential(host_pass_list);
+  ICHECK(mod_mixed.defined()) << "This module must be defined";
   auto mhost = opt_host(mod_mixed);
 
   // device pipeline
@@ -225,6 +230,7 @@ std::pair<IRModule, IRModule> SplitDevHostFuncs(IRModule mod_mixed, const Target
       BindTarget(target),
       tir::transform::LowerWarpMemory(),
       tir::transform::Simplify(),
+      tir::transform::LowerCustomDatatypes(),
       tir::transform::LowerIntrin(),
       tir::transform::LowerDeviceStorageAccessInfo(),
   };
@@ -240,47 +246,64 @@ std::pair<IRModule, IRModule> SplitDevHostFuncs(IRModule mod_mixed, const Target
   }
 
   if (target->kind->device_type == kDLCPU && target_host == target) {
-    CHECK(mdevice->functions.empty()) << "No device code should be generated when target "
-                                      << "and host_target are both llvm target."
-                                      << "\n";
+    ICHECK(mdevice->functions.empty()) << "No device code should be generated when target "
+                                       << "and host_target are both llvm target."
+                                       << "\n";
   }
 
   return {mhost, mdevice};
 }
 
 // Build for heterogeneous execution.
-runtime::Module build(const Map<Target, IRModule>& inputs, const Target& target_host) {
+runtime::Module build(const Map<Target, IRModule>& inputs_arg, const Target& target_host_arg) {
   auto pass_ctx = transform::PassContext::Current();
 
   std::vector<runtime::Module> device_modules;
-  Target target_host_val = target_host;
+  Map<Target, IRModule> inputs = inputs_arg;
+  Target target_host = target_host_arg;
+
+  // Fetch previous defined target host in targets
+  CheckAndUpdateHostConsistency(&inputs, &target_host);
+
   if (!target_host.defined()) {
     for (const auto& it : inputs) {
       if (it.first->kind->device_type == kDLCPU || it.first->kind->device_type == kDLMicroDev) {
-        target_host_val = it.first;
+        target_host = it.first;
         break;
       }
     }
   }
 
-  if (!target_host_val.defined()) {
-    target_host_val = DefaultTargetHost(target_host_val);
+  if (!target_host.defined()) {
+    target_host = DefaultTargetHost(target_host);
   }
+
+  // Update target host for all targets
+  CheckAndUpdateHostConsistency(&inputs, &target_host);
 
   IRModule mhost_all = IRModule(Map<GlobalVar, BaseFunc>());
 
-  for (const auto& it : inputs) {
-    auto pair = SplitDevHostFuncs(it.second, it.first, target_host_val, pass_ctx);
-    auto& mhost = pair.first;
-    auto& mdevice = pair.second;
+  ICHECK(mhost_all.defined()) << "The host module must be defined";
 
-    mhost_all->Update(mhost);
-    if (mdevice->functions.size() != 0) {
-      device_modules.push_back(codegen::Build(mdevice, it.first));
+  for (const auto& it : inputs) {
+    if (it.second.defined()) {
+      auto pair = SplitDevHostFuncs(it.second, it.first, target_host, pass_ctx);
+      auto& mhost = pair.first;
+      auto& mdevice = pair.second;
+
+      ICHECK(mhost.defined()) << "The split host module must be defined";
+
+      ICHECK(mhost_all.defined()) << "The host module must be defined";
+
+      mhost_all->Update(mhost);
+
+      if (mdevice->functions.size() != 0) {
+        device_modules.push_back(codegen::Build(mdevice, it.first));
+      }
     }
   }
 
-  runtime::Module mhost = codegen::Build(mhost_all, target_host_val);
+  runtime::Module mhost = codegen::Build(mhost_all, target_host);
   // Import all modules
   for (const auto& it : device_modules) {
     if (it.operator->()) {
@@ -291,21 +314,26 @@ runtime::Module build(const Map<Target, IRModule>& inputs, const Target& target_
 }
 
 // Build for heterogeneous execution when target is a string.
-runtime::Module build(const Map<String, IRModule>& inputs, const Target& target_host) {
-  Map<Target, IRModule> updated_input;
-  for (const auto& it : inputs) {
-    auto target = Target(it.first);
+runtime::Module build(const Map<String, IRModule>& inputs_arg, const Target& target_host_arg) {
+  Map<Target, IRModule> updated_inputs;
+  Target target_host = target_host_arg;
+  for (const auto& it : inputs_arg) {
+    Target target = Target(it.first);
+    CheckAndUpdateHostConsistency(&target, &target_host);
     Optional<String> device = target->GetAttr<String>("device");
     if (device.defined() && device.value() == "vta") {
       target = Target("ext_dev");
     }
-    updated_input.Set(target, it.second);
+    updated_inputs.Set(target, it.second);
   }
-  return build(updated_input, target_host);
+  return build(updated_inputs, target_host);
 }
 
 // Build for homogeneous execution.
-runtime::Module build(const IRModule& funcs, const Target& target, const Target& target_host) {
+runtime::Module build(const IRModule& funcs, const Target& target_arg,
+                      const Target& target_host_arg) {
+  auto target = target_arg, target_host = target_host_arg;
+  CheckAndUpdateHostConsistency(&target, &target_host);
   Map<Target, IRModule> inputs = {{target, funcs}};
   return build(inputs, target_host);
 }

@@ -57,7 +57,7 @@ mlmodel = cm.models.MLModel(model_path)
 # Load a test image
 # ------------------
 # A single cat dominates the examples!
-img_url = "https://github.com/dmlc/mxnet.js/blob/master/data/cat.png?raw=true"
+img_url = "https://github.com/dmlc/mxnet.js/blob/main/data/cat.png?raw=true"
 img_path = download_testdata(img_url, "cat.png", module="data")
 img = Image.open(img_path).resize((224, 224))
 # Mobilenet.mlmodel's input is BGR format
@@ -81,11 +81,11 @@ with tvm.transform.PassContext(opt_level=3):
 # Execute on TVM
 # -------------------
 # The process is no different from other example
-from tvm.contrib import graph_runtime
+from tvm.contrib import graph_executor
 
-ctx = tvm.cpu(0)
+dev = tvm.cpu(0)
 dtype = "float32"
-m = graph_runtime.GraphModule(lib["default"](ctx))
+m = graph_executor.GraphModule(lib["default"](dev))
 # set inputs
 m.set_input("image", tvm.nd.array(x.astype(dtype)))
 # execute

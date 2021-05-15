@@ -22,7 +22,7 @@ from tvm import te
 from tvm import topi
 import tvm.topi.testing
 from tvm.contrib.pickle_memoize import memoize
-from tvm.topi.util import get_const_tuple
+from tvm.topi.utils import get_const_tuple
 import tvm.testing
 
 
@@ -67,10 +67,10 @@ def verify_conv2d_nhwc(batch, in_channel, in_size, num_filter, kernel, stride, p
             fcompute, fschedule = tvm.topi.testing.dispatch(device, _conv2d_nhwc_implement)
             B = fcompute(A, W, stride, padding, dilation, dtype)
             s = fschedule([B])
-        ctx = tvm.context(device, 0)
-        a = tvm.nd.array(a_np, ctx)
-        w = tvm.nd.array(w_np, ctx)
-        b = tvm.nd.array(np.zeros(get_const_tuple(B.shape), dtype=B.dtype), ctx)
+        dev = tvm.device(device, 0)
+        a = tvm.nd.array(a_np, dev)
+        w = tvm.nd.array(w_np, dev)
+        b = tvm.nd.array(np.zeros(get_const_tuple(B.shape), dtype=B.dtype), dev)
         func = tvm.build(s, [A, W, B], device)
         func(a, w, b)
         tvm.testing.assert_allclose(b.asnumpy(), b_np, rtol=1e-5)

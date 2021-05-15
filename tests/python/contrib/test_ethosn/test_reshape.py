@@ -37,8 +37,8 @@ def test_reshape():
         return
 
     trials = [
-        ((1, 15, 4, 1), (60,)),
-        ((1, 15, 4, 1), (30, 2)),
+        ((1, 15, 4, 1), (1, 60)),
+        ((1, 15, 4, 1), (1, 30, 2)),
         ((1, 15, 4, 1), (1, 4, 15, 1)),
         ((1, 15, 4, 1), (1, 12, 5, 1)),
         ((1, 15, 4, 1), (1, -1, 2, 1)),
@@ -76,6 +76,7 @@ def test_reshape_failure():
         model, params = _get_model(input_shape, output_shape, dtype)
         mod = tei.make_module(model, params)
         pattern = get_pattern_table("ethos-n")
+        mod = tei.make_module(model, params)
         mod = relay.transform.MergeComposite(pattern)(mod)
         mod = tei.make_ethosn_partition(mod["main"].body)
         tei.test_error(mod, {}, err_msg)

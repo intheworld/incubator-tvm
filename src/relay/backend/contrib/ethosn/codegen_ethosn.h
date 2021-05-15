@@ -46,6 +46,7 @@
 #include "../../../../runtime/contrib/ethosn/ethosn_runtime.h"
 #include "../codegen_c/codegen_c.h"
 #include "ethosn_api.h"
+#include "ethosn_api_version.h"
 #include "ethosn_support_library/Support.hpp"
 #include "ethosn_support_library/SupportQueries.hpp"
 
@@ -239,14 +240,18 @@ struct EthosnCompilerConfigNode : public tvm::AttrsNode<EthosnCompilerConfigNode
   bool block_config_8x32;
   bool block_config_8x8;
   bool enable_intermediate_compression;
-  bool disable_winograd;
+#if _ETHOSN_API_VERSION_ == 2008
   bool dump_debug_files;
+#endif
+  bool disable_winograd;
   String debug_dir;
-  bool enable_cascading;
+  String compiler_algorithm;
 
   TVM_DECLARE_ATTRS(EthosnCompilerConfigNode, "ext.attrs.EthosnCompilerConfigNode") {
     TVM_ATTR_FIELD(variant)
-        .describe("0 for Ethos-N77, 1 for Ethos-N57, 2 for Ethos-N37. See Ethos-N documentation.")
+        .describe(
+            "0 for Ethos-N77, 1 for Ethos-N57, 2 for Ethos-N37,"
+            " 3 for Ethos-N78. See Ethos-N documentation.")
         .set_default(0);
     TVM_ATTR_FIELD(strategy0).set_default(true);
     TVM_ATTR_FIELD(strategy1).set_default(true);
@@ -261,10 +266,12 @@ struct EthosnCompilerConfigNode : public tvm::AttrsNode<EthosnCompilerConfigNode
     TVM_ATTR_FIELD(block_config_8x32).set_default(true);
     TVM_ATTR_FIELD(block_config_8x8).set_default(true);
     TVM_ATTR_FIELD(enable_intermediate_compression).set_default(true);
-    TVM_ATTR_FIELD(disable_winograd).set_default(false);
+#if _ETHOSN_API_VERSION_ == 2008
     TVM_ATTR_FIELD(dump_debug_files).set_default(false);
+#endif
+    TVM_ATTR_FIELD(disable_winograd).set_default(false);
     TVM_ATTR_FIELD(debug_dir).set_default(".");
-    TVM_ATTR_FIELD(enable_cascading).set_default(false);
+    TVM_ATTR_FIELD(compiler_algorithm).set_default("NonCascadingOnly");
   }
 };
 
@@ -328,6 +335,9 @@ runtime::Module CompileEthosn(const ObjectRef& ref) {
 }
 
 TVM_REGISTER_GLOBAL("relay.ext.ethos-n").set_body_typed(CompileEthosn);
+
+TVM_REGISTER_GLOBAL("relay.ext.ethos-n.constant_updater")
+    .set_body_typed([](Expr expr, std::string symbol) { return Map<String, runtime::NDArray>(); });
 
 }  // namespace ethosn
 }  // namespace contrib

@@ -43,6 +43,16 @@ def test_infinity_value():
     _test_infinity_value(float("-inf"), "float32")
 
 
+def _test_minmax_value(value):
+    json_str = tvm.ir.save_json(value)
+    tvm.ir.assert_structural_equal(value, tvm.ir.load_json(json_str))
+
+
+def test_minmax_value():
+    _test_minmax_value(tvm.tir.min_value("float32"))
+    _test_minmax_value(tvm.tir.max_value("float32"))
+
+
 def test_make_smap():
     # save load json
     x = tvm.tir.const(1, "int32")
@@ -57,7 +67,7 @@ def test_make_smap():
 
 
 def test_make_node():
-    x = tvm.ir.make_node("IntImm", dtype="int32", value=10)
+    x = tvm.ir.make_node("IntImm", dtype="int32", value=10, span=None)
     assert isinstance(x, tvm.tir.IntImm)
     assert x.value == 10
     A = te.placeholder((10,), name="A")
@@ -67,7 +77,7 @@ def test_make_node():
     assert AA.op == A.op
     assert AA.value_index == A.value_index
 
-    y = tvm.ir.make_node("IntImm", dtype=tvm.runtime.String("int32"), value=10)
+    y = tvm.ir.make_node("IntImm", dtype=tvm.runtime.String("int32"), value=10, span=None)
 
 
 def test_make_sum():
@@ -160,3 +170,4 @@ if __name__ == "__main__":
     test_pass_config()
     test_dict()
     test_infinity_value()
+    test_minmax_value()

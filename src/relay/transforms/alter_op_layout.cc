@@ -36,7 +36,7 @@
 #include <utility>
 #include <vector>
 
-#include "pattern_util.h"
+#include "pattern_utils.h"
 #include "transform_layout.h"
 
 namespace tvm {
@@ -97,7 +97,7 @@ class AlterTransformMemorizer : public TransformMemorizer {
     }
 
     const CallNode* new_call = new_e.as<CallNode>();
-    CHECK(new_call) << "Can only replace the original operator with another call node";
+    ICHECK(new_call) << "Can only replace the original operator with another call node";
     return GetRef<Call>(new_call);
   }
 
@@ -110,6 +110,7 @@ class AlterTransformMemorizer : public TransformMemorizer {
  * 2. Do not support nested tuple arguments.
  */
 Expr AlterOpLayout(const Expr& expr) {
+  // TODO(@icemelon9): need to rerun type inference after applying an alter op.
   AlterTransformMemorizer alterMemorizer(make_object<AlterTransformMemorizerNode>());
   auto fcontext = [&](const Call& call) -> ObjectRef { return alterMemorizer; };
 

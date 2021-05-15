@@ -138,7 +138,7 @@ def _ActivationParams(op, inexpr, etab):
     if whichActivation == "ReLU":
         return _op.nn.relu(inexpr)
     if whichActivation == "leakyReLU":
-        _op.nn.leaky_relu(inexpr, alpha=_expr.const(par.alpha, dtype="float32"))
+        return _op.nn.leaky_relu(inexpr, alpha=par.alpha)
     elif whichActivation == "thresholdedReLU":
         alpha_tensor = _op.full_like(inexpr, fill_value=_expr.const(par.alpha, dtype="float32"))
         return _op.multiply(inexpr, _op.greater(inexpr, alpha_tensor).as_type("float32"))
@@ -524,7 +524,7 @@ def coreml_op_to_relay(op, inname, outnames, etab):
             outname = outnames if isinstance(outnames, _base.string_types) else outnames[0]
             etab.set_expr(outname, outs, force_override=True)
         else:
-            # the number of ouputs from model op and tvm relay must be same
+            # the number of outputs from model op and tvm relay must be same
             assert len(outnames) == len(outs)
             for outname, out in zip(outnames, outs):
                 etab.set_expr(outname, out, force_override=True)

@@ -23,24 +23,27 @@ registers the standard task.
 """
 import numpy as np
 
-from tvm.target import Target
 from tvm import runtime
 from tvm.ir import container
+from tvm.target import Target
+from tvm.te import placeholder, tensor
 from tvm.tir import expr
-from tvm.te import tensor, placeholder
 
 
-from ..util import get_const_int, get_const_tuple
-from .dispatcher import DispatchContext, ApplyConfig
+from ..utils import get_const_int, get_const_tuple
+from .dispatcher import ApplyConfig, DispatchContext
 from .space import ConfigSpace
 
 
-def _raise_error(*args, **kwargs):  # pylint: disable=unused-argument
-    raise RuntimeError(
-        "The function of this task is not found. Possibly the function "
-        "of this task is registered in another python file "
-        "which is not imported in this run"
-    )
+def _lookup_task(name):
+    task = TASK_TABLE.get(name)
+    if task is None:
+        raise RuntimeError(
+            f"Could not find a registered function for the task {name}. It is "
+            "possible that the function is registered in a python file which was "
+            "not imported in this run."
+        )
+    return task
 
 
 def serialize_args(args):
@@ -130,7 +133,7 @@ class Task(object):
 
         # init null config space
         self.config_space = None
-        self.func = TASK_TABLE.get(name, _raise_error)
+        self.func = _lookup_task(name)
 
         # auxiliary info, available after `init_space` is called
         self.flop = None
@@ -170,6 +173,11 @@ class Task(object):
         # some unpickable local task functions.
         # So we only pickle the name of the function
         # and restore the function by name when unpickling it.
+        import cloudpickle  # pylint: disable=import-outside-toplevel
+
+        self.target, self.target_host = Target.check_and_update_host_consist(
+            self.target, self.target_host
+        )
         return {
             "name": self.name,
             "args": self.args,
@@ -178,17 +186,21 @@ class Task(object):
             "flop": self.flop,
             "target": self.target,
             "target_host": self.target_host,
+            "func": cloudpickle.dumps(self.func),
         }
 
     def __setstate__(self, state):
+        import cloudpickle  # pylint: disable=import-outside-toplevel
+
         self.name = state["name"]
         self.args = state["args"]
         self.kwargs = state["kwargs"]
         self.config_space = state["config_space"]
-        self.func = TASK_TABLE.get(state["name"], _raise_error)
+        self.func = cloudpickle.loads(state["func"])
         self.flop = state["flop"]
-        self.target = state["target"]
-        self.target_host = state["target_host"]
+        self.target, self.target_host = Target.check_and_update_host_consist(
+            state["target"], state["target_host"]
+        )
 
     def __repr__(self):
         return "Task(func_name=%s, args=%s, kwargs=%s, workload=%s)" % (
@@ -440,6 +452,8 @@ def create(task_name, args, target, target_host=None):
     if isinstance(target, str):
         target = Target(target)
 
+    target, target_host = Target.check_and_update_host_consist(target, target_host)
+
     # init config space
     ret.config_space = ConfigSpace()
 
@@ -572,6 +586,7 @@ def compute_flop(sch):
                 pass
             else:
                 raise FlopCalculationError(
+                    f"{op.name} is not supported by autotvm. "
                     "Only support te.compute currently. "
                     "Other ops like tvm.te.scan/te.extern is not supported"
                 )

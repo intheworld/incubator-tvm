@@ -19,7 +19,7 @@ import tvm
 from tvm import te
 import numpy as np
 from tvm import relay
-from tvm.contrib import graph_runtime
+from tvm.contrib import graph_executor
 
 roundings = ["UPWARD", "TONEAREST"]
 
@@ -28,7 +28,7 @@ def verify(mod, goldens):
     with tvm.transform.PassContext(opt_level=3):
         graph, lib, params = relay.build(mod, "llvm", params=None)
         golden_data, golden_output = goldens
-        rt_mod = graph_runtime.create(graph, lib, ctx=tvm.cpu(0))
+        rt_mod = graph_executor.create(graph, lib, device=tvm.cpu(0))
         rt_mod.set_input("quantized_data", golden_data)
         rt_mod.set_input(**params)
         rt_mod.run()
@@ -201,6 +201,48 @@ def test_upscale():
         # -8 corresponds to -0.5. For UPWARD, this is 0
         golden_data = np.arange(0, -32, -1).astype("int32")
         golden_output = np.multiply(2, golden_data)
+        verify(mod, (golden_data, golden_output))
+
+
+def test_non_power_of_two():
+    for rounding in roundings:
+        mod = get_mod(
+            data_shape=(32,),
+            data_dtype="int32",
+            out_dtype="int8",
+            input_scale=1,
+            output_scale=3,
+            rounding=rounding,
+        )
+
+        # Try positive values
+        golden_data = np.multiply(np.arange(0, 32, 1).astype("int32"), 3)
+        golden_output = np.arange(0, 32, 1)
+        verify(mod, (golden_data, golden_output))
+
+        # Try negative values
+        golden_data = np.multiply(np.arange(0, -32, -1).astype("int32"), 3)
+        golden_output = np.arange(0, -32, -1)
+        verify(mod, (golden_data, golden_output))
+
+        # Try a different scale
+        mod = get_mod(
+            data_shape=(32,),
+            data_dtype="int32",
+            out_dtype="int8",
+            input_scale=3,
+            output_scale=1,
+            rounding=rounding,
+        )
+
+        # Try positive values
+        golden_data = np.arange(0, 32, 1).astype("int32")
+        golden_output = np.multiply(golden_data, 3)
+        verify(mod, (golden_data, golden_output))
+
+        # Try negative values
+        golden_data = np.arange(0, -32, -1).astype("int32")
+        golden_output = np.multiply(golden_data, 3)
         verify(mod, (golden_data, golden_output))
 
 
@@ -397,6 +439,7 @@ if __name__ == "__main__":
     test_same_scale()
     test_downscale()
     test_upscale()
+    test_non_power_of_two()
     test_saturation()
     test_zero_point()
     test_per_channel_same_scale()

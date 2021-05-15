@@ -26,22 +26,22 @@
 #include <tvm/tir/builtin.h>
 #include <tvm/tir/expr.h>
 #include <tvm/tir/op.h>
+#include <tvm/tir/op_attr_types.h>
 
 #include <sstream>
 
 namespace tvm {
 namespace codegen {
 
-inline void DispatchPureExternOCML(const TVMArgs& args, TVMRetValue* rv) {
-  PrimExpr e = args[0];
+inline PrimExpr DispatchPureExternOCML(const PrimExpr& e) {
   using namespace tir;
   const CallNode* call = e.as<CallNode>();
-  CHECK(call != nullptr);
+  ICHECK(call != nullptr);
 
   const OpNode* op = call->op.as<OpNode>();
-  CHECK(op != nullptr);
+  ICHECK(op != nullptr);
   std::string name = op->name;
-  CHECK_EQ(name.substr(0, 4), "tir.");
+  ICHECK_EQ(name.substr(0, 4), "tir.");
 
   std::ostringstream intrinsic_name;
   intrinsic_name << "__ocml_" << name.substr(4) << "_f" << call->dtype.bits();
@@ -51,17 +51,16 @@ inline void DispatchPureExternOCML(const TVMArgs& args, TVMRetValue* rv) {
     new_args.push_back(arg);
   }
 
-  *rv = Call(call->dtype, builtin::call_pure_extern(), new_args);
+  return Call(call->dtype, builtin::call_pure_extern(), new_args);
 }
 
-inline void DispatchShuffle(const TVMArgs& targs, TVMRetValue* rv) {
-  PrimExpr e_call = targs[0];
+inline PrimExpr DispatchShuffle(const PrimExpr& e) {
   using namespace tir;
-  const CallNode* call = e_call.as<CallNode>();
-  CHECK(call != nullptr);
-  CHECK_EQ(call->args.size(), 5);  // mask, value, warp_id, width, warp_size
+  const CallNode* call = e.as<CallNode>();
+  ICHECK(call != nullptr);
+  ICHECK_EQ(call->args.size(), 5);  // mask, value, warp_id, width, warp_size
   PrimExpr var = call->args[1];
-  CHECK_EQ(var.dtype().bits(), 32);
+  ICHECK_EQ(var.dtype().bits(), 32);
 
   // get own lane in self (__lane_id)
   PrimExpr minus_one = tir::make_const(DataType::Int(32), -1);
@@ -82,74 +81,100 @@ inline void DispatchShuffle(const TVMArgs& targs, TVMRetValue* rv) {
     index = self - delta;
     index = Select(index < (self & ~(width - 1)), self, index);
   } else {
-    CHECK(call->op.same_as(builtin::tvm_warp_shuffle_down()));
+    ICHECK(call->op.same_as(builtin::tvm_warp_shuffle_down()));
     PrimExpr delta = call->args[2];
     index = self + delta;
     index = Select((self & (width - 1)) + delta >= width, self, index);
   }
   PrimExpr res = Call(var.dtype(), builtin::call_pure_extern(),
                       {StringImm("llvm.amdgcn.ds.bpermute"), index << 2, var});
-  *rv = res;
+  return res;
 }
 
 namespace llvm {
+using tir::FLowerIntrinsic;
 
 // dummy because we don't have the activemask
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.tvm_warp_activemask")
-    .set_body([](const TVMArgs& targs, TVMRetValue* rv) {
+TVM_REGISTER_OP("tir.tvm_warp_activemask")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", [](const PrimExpr& e) -> PrimExpr {
       PrimExpr zero = tir::make_zero(DataType::Int(32));
-      *rv = zero;
+      return zero;
     });
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.tvm_warp_shuffle").set_body(DispatchShuffle);
+TVM_REGISTER_OP("tir.tvm_warp_shuffle")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchShuffle);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.tvm_warp_shuffle_up").set_body(DispatchShuffle);
+TVM_REGISTER_OP("tir.tvm_warp_shuffle_up")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchShuffle);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.tvm_warp_shuffle_down").set_body(DispatchShuffle);
+TVM_REGISTER_OP("tir.tvm_warp_shuffle_down")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchShuffle);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.floor").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.floor")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.ceil").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.ceil")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.round").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.round")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.trunc").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.trunc")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.fabs").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.fabs")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.exp").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.exp").set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic",
+                                                     DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.exp2").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.exp2")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.exp10").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.exp10")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.erf").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.erf").set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic",
+                                                     DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.fma").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.fma").set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic",
+                                                     DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.log").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.log").set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic",
+                                                     DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.log2").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.log2")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.log10").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.log10")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.sqrt").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.sqrt")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.pow").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.pow").set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic",
+                                                     DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.tanh").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.tanh")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.tan").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.tan").set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic",
+                                                     DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.cos").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.cos").set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic",
+                                                     DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.cosh").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.cosh")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.sin").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.sin").set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic",
+                                                     DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.sinh").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.sinh")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
-TVM_REGISTER_GLOBAL("tvm.intrin.rule.rocm.atan").set_body(DispatchPureExternOCML);
+TVM_REGISTER_OP("tir.atan")
+    .set_attr<FLowerIntrinsic>("rocm.FLowerIntrinsic", DispatchPureExternOCML);
 
 }  // namespace llvm
 }  // namespace codegen

@@ -14,14 +14,14 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+import numpy as np
+
 import tvm
-from tvm import te
 from tvm import relay
 import tvm.relay.testing
 import pytest
 from numpy import isclose
 from typing import Union
-from functools import wraps
 
 
 SEMVER = '#[version = "0.0.5"]\n'
@@ -111,6 +111,7 @@ def assert_parses_as(code, expr):
 
 
 def assert_parse_module_as(code, mod):
+    mod = tvm.relay.transform.InferType()(mod)
     parsed = parse_module(code)
     assert_graph_equal(parsed, mod)
 
@@ -295,6 +296,14 @@ def test_tuple():
     assert_parses_as("(0, 1, 2)", relay.Tuple([relay.const(0), relay.const(1), relay.const(2)]))
 
 
+def test_tuple_proj():
+    x = relay.var("x", shape=())
+    assert_parses_as(
+        "free_var %x: float32; %x((%x,).0, %x)",
+        relay.Call(x, [relay.TupleGetItem(relay.Tuple([x]), 0), x]),
+    )
+
+
 def test_func():
     # 0 args
     assert_parses_as("fn () { 0 }", relay.Function([], relay.const(0), None, []))
@@ -365,6 +374,18 @@ def test_ifelse_scope():
             }
             """
         )
+
+
+def test_ref():
+    program = """
+    #[version = "0.0.5"]
+    def @main(%x: float32) {
+        %0 = ref(%x);
+        ref_write(%0, 1f);
+        ref_read(%0)
+    }
+    """
+    tvm.parser.parse(program)
 
 
 def test_call():
@@ -806,8 +827,8 @@ def test_import_grad():
     mod.import_from_std("gradient.rly")
 
 
-def test_resnet():
-    mod, _ = relay.testing.resnet.get_workload()
+def test_mlp():
+    mod, _ = relay.testing.mlp.get_workload(1)
     text = mod.astext()
     parsed_mod = tvm.parser.parse(text)
     tvm.ir.assert_structural_equal(mod, parsed_mod)
@@ -825,16 +846,124 @@ def inline_params(mod, params):
 
     body = relay.bind(main_fn.body, bind_map)
     main_fn = relay.Function(relay.analysis.free_vars(body), body)
-    mod["main_fn"] = main_fn
+    mod._add("main", main_fn, True)
     return mod
 
 
-def test_resnet_inlined_params():
-    mod, params = relay.testing.resnet.get_workload()
+def test_mlp_inlined_params():
+    mod, params = relay.testing.mlp.get_workload(1)
     mod = inline_params(mod, params)
+    mod = relay.transform.InferType()(mod)
     text = mod.astext()
     parsed_mod = tvm.parser.parse(text)
     tvm.ir.assert_structural_equal(mod, parsed_mod)
+
+
+def test_tuple_return_value():
+    program = """
+    type Box[T] {
+        constructor(T)
+    }
+
+    def @example() {
+        %0 = ();
+        %1 = constructor(%0);
+        %2 = constructor(0f);
+        (%1, %2,)
+    }
+    """
+    parse_module(program)
+
+
+def test_parse_if_in_binding():
+    program = """
+    def @example(%b: bool) {
+        %0 = if (%b) {
+            1
+        } else {
+            0
+        };
+        %0
+    }
+    """
+    parse_module(program)
+
+
+def test_op_string_attr():
+    call = parse_text(
+        """
+        free_var %x: Tensor[(1, 32, 32, 3), float32];
+        free_var %y: Tensor[(1, 1, 3, 3), float32];
+        nn.conv2d(%x, %y, data_layout="NHWC", kernel_layout="HWIO")
+        """
+    )
+
+    assert isinstance(call.op, tvm.ir.Op)
+    assert call.op.name == "nn.conv2d"
+    assert call.attrs.data_layout == "NHWC"
+    assert call.attrs.kernel_layout == "HWIO"
+
+
+def test_load_prelude():
+    mod = tvm.IRModule()
+    mod.import_from_std("prelude.rly")
+    tvm.parser.parse(mod.astext())
+
+
+def test_call_attrs():
+    def get_func(shape, dtype):
+        x0 = relay.var("data", shape=shape, dtype=dtype)
+        w0 = relay.var("weight", shape=shape, dtype=dtype)
+        a = relay.nn.dense(x0, w0)
+        b = relay.nn.relu(a)
+        d = relay.add(b, relay.const(1.0, dtype=dtype))
+        return relay.Function([x0, w0], d)
+
+    # build relay graph
+    shape = (2, 4)
+    dtype = "float32"
+    sub_func = get_func(shape, dtype)
+    p0 = relay.var("p0", shape=shape, dtype=dtype)
+    p1 = relay.var("p1", shape=shape, dtype=dtype)
+    attr = tvm.ir.make_node("attrs.TestAttrs", name="func_call_attrs")
+    call = relay.Call(sub_func, [p0, p1], attrs=attr)
+    func = relay.Function([p0, p1], call)
+
+    # build relay module
+    mod = tvm.IRModule()
+    mod["main"] = func
+    mod = tvm.relay.transform.InferType()(mod)
+
+    # assert equal
+    program = """
+    def @main(%p0: Tensor[(2, 4), float32], %p1: Tensor[(2, 4), float32]) {
+    %2 = fn (%data: Tensor[(2, 4), float32], %weight: Tensor[(2, 4), float32]) {
+        %0 = nn.dense(%data, %weight, units=None);
+        %1 = nn.relu(%0);
+        add(%1, 1f)
+    };
+    %2(%p0, %p1, name="func_call_attrs", attrs_type_key="attrs.TestAttrs")
+    }
+    """
+    parsed = parse_module(program)
+    assert_graph_equal(parsed, mod)
+
+
+def test_tokenize_inf():
+    x = relay.var("x", shape=(3, 4), dtype="float32")
+    y = relay.clip(x, -np.inf, np.inf)
+
+    f = relay.Function([x], y)
+    mod = tvm.IRModule.from_expr(f)
+
+    mod = relay.transform.AnnotateSpans()(mod)
+
+
+def test_func_attrs():
+    attrs = tvm.ir.make_node("DictAttrs", **{"Primitive": 1, "relay.reshape_only": 1})
+    x = relay.var("x", shape=(2, 3))
+    func = relay.Function([x], relay.reshape(x, (-1,)), attrs=attrs)
+    assert_parses_as(func.astext(), func)
 
 
 if __name__ == "__main__":

@@ -24,8 +24,8 @@ from tvm import topi
 import tvm.topi.testing
 from tvm import te
 from tvm.contrib.pickle_memoize import memoize
-from tvm.topi.nn.util import get_pad_tuple
-from tvm.topi.util import get_const_tuple
+from tvm.topi.nn.utils import get_pad_tuple
+from tvm.topi.utils import get_const_tuple
 import tvm.testing
 
 
@@ -74,7 +74,7 @@ def verify_conv2d_nhwc(
     bias_shape = get_const_tuple(bias.shape)
     dtype = A.dtype
 
-    @memoize("topi.tests.test_topi_conv2d_nhwc.verify_conv2d_nhwc")
+    @memoize("topi.tests.test_topi_conv2d_nhwc_winograd.verify_conv2d_nhwc")
     def get_ref_data():
         a_np = np.random.uniform(size=a_shape).astype(dtype)
         w_np = np.random.uniform(size=w_shape).astype(dtype)
@@ -91,7 +91,7 @@ def verify_conv2d_nhwc(
     a_np, w_np, b_np, c_np = get_ref_data()
 
     def check_device(device):
-        ctx = tvm.context(device, 0)
+        dev = tvm.device(device, 0)
         print("Running on target: %s" % device)
         with tvm.target.Target(device):
             if bgemm == "direct":
@@ -109,10 +109,10 @@ def verify_conv2d_nhwc(
                 C = topi.nn.relu(C)
             s = fschedule([C])
 
-        a = tvm.nd.array(a_np, ctx)
-        w = tvm.nd.array(w_np, ctx)
-        b = tvm.nd.array(b_np, ctx)
-        c = tvm.nd.array(np.zeros(get_const_tuple(C.shape), dtype=C.dtype), ctx)
+        a = tvm.nd.array(a_np, dev)
+        w = tvm.nd.array(w_np, dev)
+        b = tvm.nd.array(b_np, dev)
+        c = tvm.nd.array(np.zeros(get_const_tuple(C.shape), dtype=C.dtype), dev)
         if add_bias:
             func = tvm.build(
                 s,

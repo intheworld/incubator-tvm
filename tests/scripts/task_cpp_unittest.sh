@@ -19,6 +19,9 @@
 set -e
 set -u
 
+# Python is required by apps/bundle_deploy
+source tests/scripts/setup-pytest-env.sh
+
 export LD_LIBRARY_PATH="lib:${LD_LIBRARY_PATH:-}"
 # NOTE: important to use abspath, when VTA is enabled.
 export VTA_HW_PATH=`pwd`/3rdparty/vta-hw
@@ -31,7 +34,12 @@ export OMP_NUM_THREADS=1
 rm -f build/*_test
 
 make cpptest -j2
-make crttest  # NOTE: don't parallelize, due to issue with build deps.
+
+# "make crttest" requires USE_MICRO to be enabled, which is not always the case.
+if grep crttest build/Makefile > /dev/null; then
+    make crttest  # NOTE: don't parallelize, due to issue with build deps.
+fi
+
 for test in build/*_test; do
     ./$test
 done

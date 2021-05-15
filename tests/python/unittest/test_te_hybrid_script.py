@@ -17,7 +17,7 @@
 import tvm, inspect, sys, traceback, numpy, pytest, types, os
 
 from tvm import te
-from tvm.contrib import util
+from tvm.contrib import utils
 from tvm.te.hybrid import script
 from tvm.te.hybrid.runtime import HYBRID_GLOBALS
 
@@ -32,7 +32,7 @@ def run_and_check(func, args, var_dict={}, target="llvm", sch=None, outs=None):
         assert isinstance(val, (tvm.tir.IntImm,))
         return val.value
 
-    ctx = tvm.context(target, 0)
+    dev = tvm.device(target, 0)
     op = None
 
     if sch is None:
@@ -50,7 +50,7 @@ def run_and_check(func, args, var_dict={}, target="llvm", sch=None, outs=None):
         if isinstance(i, te.tensor.Tensor):
             shape = [tvm_val_2_py_val(j) for j in i.shape]
             emu_args.append(numpy.random.randn(*shape).astype(i.dtype))
-            nd_args.append(tvm.nd.array(emu_args[-1], ctx))
+            nd_args.append(tvm.nd.array(emu_args[-1], dev))
         elif isinstance(i, tvm.tir.Var):
             emu_args.append(tvm_val_2_py_val(i))
             nd_args.append(emu_args[-1])
@@ -68,7 +68,7 @@ def run_and_check(func, args, var_dict={}, target="llvm", sch=None, outs=None):
     for i in range(op.num_outputs):
         output = op.output(i)
         shape = [tvm_val_2_py_val(j) for j in output.shape]
-        nd_args.append(tvm.nd.array(numpy.zeros(shape).astype(output.dtype), ctx))
+        nd_args.append(tvm.nd.array(numpy.zeros(shape).astype(output.dtype), dev))
         out_tensors.append(nd_args[-1])
 
     ref_data = func(*emu_args)
@@ -147,7 +147,7 @@ def test_outer_product():
     assert mul.b.producer.name == "b"
 
     func, ins, outs = run_and_check(outer_product, [n, m, a, b], {n: 99, m: 101})
-    temp = util.tempdir()
+    temp = utils.tempdir()
     path = temp.relpath("%s.py" % func.name)
     func.save(path)
     func_ = te.hybrid.HybridModule()
@@ -267,9 +267,9 @@ def test_looptype():
     iloop = ir[0]
     jloop = ir[1]
     kloop = ir[2]
-    assert iloop.for_type == tvm.tir.For.Parallel
-    assert jloop.for_type == tvm.tir.For.Vectorized
-    assert kloop.for_type == tvm.tir.For.Unrolled
+    assert iloop.kind == tvm.tir.ForKind.PARALLEL
+    assert jloop.kind == tvm.tir.ForKind.VECTORIZED
+    assert kloop.kind == tvm.tir.ForKind.UNROLLED
 
     func, ins, outs = run_and_check(looptype, [a, b, c])
     run_and_check(func, ins, outs=outs)

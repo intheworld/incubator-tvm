@@ -220,9 +220,8 @@ class QuantizeContext(object):
         if current_qconfig().skip_conv_layers is not None:
             # check skip conv layers
             skipped_indices = [int(x) for x in current_qconfig().skip_conv_layers]
-            if self._conv2d_counter in skipped_indices:
-                if ref_call.op.name == "nn.conv2d":
-                    self._conv2d_counter += 1
+            if self._conv2d_counter in skipped_indices and ref_call.op.name == "nn.conv2d":
+                self._conv2d_counter += 1
                 return True
             if ref_call.op.name == "nn.conv2d":
                 self._conv2d_counter += 1
@@ -359,7 +358,7 @@ def quantize(mod, params=None, dataset=None):
     calibrate_pass = tvm.transform.module_pass(
         calibrate(dataset), opt_level=1, name="QuantizeCalibrate"
     )
-    quant_passes = [partition(), annotate(), calibrate_pass]
+    quant_passes = [partition(), annotate(), calibrate_pass, tvm.relay.transform.InferType()]
     if not current_qconfig().do_simulation:
         quant_passes.append(realize())
     quant_passes.append(_transform.FoldConstant())

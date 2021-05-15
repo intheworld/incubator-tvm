@@ -27,8 +27,8 @@ A quick solution is to install via pip
 
 .. code-block:: bash
 
-    pip install torch==1.4.0
-    pip install torchvision==0.5.0
+    pip install torch==1.7.0
+    pip install torchvision==0.8.1
 
 or please refer to official site
 https://pytorch.org/get-started/locally/
@@ -36,7 +36,7 @@ https://pytorch.org/get-started/locally/
 PyTorch versions should be backwards compatible but should be used
 with the proper TorchVision version.
 
-Currently, TVM supports PyTorch 1.4 and 1.3. Other versions may
+Currently, TVM supports PyTorch 1.7 and 1.4. Other versions may
 be unstable.
 """
 
@@ -44,7 +44,7 @@ import tvm
 from tvm import relay
 from tvm import relay
 from tvm.runtime.vm import VirtualMachine
-from tvm.contrib.download import download
+from tvm.contrib.download import download_testdata
 
 import numpy as np
 import cv2
@@ -96,11 +96,10 @@ with torch.no_grad():
 ######################################################################
 # Download a test image and pre-process
 # -------------------------------------
-img_path = "test_street_small.jpg"
 img_url = (
     "https://raw.githubusercontent.com/dmlc/web-data/" "master/gluoncv/detection/street_small.jpg"
 )
-download(img_url, img_path)
+img_path = download_testdata(img_url, "test_street_small.jpg", module="data")
 
 img = cv2.imread(img_path).astype("float32")
 img = cv2.resize(img, (in_size, in_size))
@@ -134,8 +133,8 @@ with tvm.transform.PassContext(opt_level=3, disabled_pass=["FoldScaleAxis"]):
 ######################################################################
 # Inference with Relay VM
 # -----------------------
-ctx = tvm.cpu()
-vm = VirtualMachine(vm_exec, ctx)
+dev = tvm.cpu()
+vm = VirtualMachine(vm_exec, dev)
 vm.set_input("main", **{input_name: img})
 tvm_res = vm.run()
 

@@ -20,7 +20,7 @@ import tvm
 from tvm import te
 import numpy as np
 from tvm import rpc
-from tvm.contrib import util, tflite_runtime
+from tvm.contrib import utils, tflite_runtime
 
 
 def _create_tflite_model():
@@ -70,7 +70,7 @@ def test_local():
 
     tflite_fname = "model.tflite"
     tflite_model = _create_tflite_model()
-    temp = util.tempdir()
+    temp = utils.tempdir()
     tflite_model_path = temp.relpath(tflite_fname)
     open(tflite_model_path, "wb").write(tflite_model)
 
@@ -111,7 +111,7 @@ def test_remote():
 
     tflite_fname = "model.tflite"
     tflite_model = _create_tflite_model()
-    temp = util.tempdir()
+    temp = utils.tempdir()
     tflite_model_path = temp.relpath(tflite_fname)
     open(tflite_model_path, "wb").write(tflite_model)
 
@@ -128,9 +128,8 @@ def test_remote():
     tflite_output = interpreter.get_tensor(output_details[0]["index"])
 
     # inference via remote tvm tflite runtime
-    server = rpc.Server("localhost")
+    server = rpc.Server("127.0.0.1")
     remote = rpc.connect(server.host, server.port)
-    ctx = remote.cpu(0)
     a = remote.upload(tflite_model_path)
 
     with open(tflite_model_path, "rb") as model_fin:

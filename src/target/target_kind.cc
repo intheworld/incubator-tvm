@@ -23,6 +23,7 @@
  */
 #include <tvm/ir/expr.h>
 #include <tvm/runtime/device_api.h>
+#include <tvm/runtime/registry.h>
 #include <tvm/target/target.h>
 #include <tvm/target/target_kind.h>
 
@@ -43,6 +44,10 @@ TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
 /**********  Registry-related code  **********/
 
 using TargetKindRegistry = AttrRegistry<TargetKindRegEntry, TargetKind>;
+
+Array<String> TargetKindRegEntry::ListTargetKinds() {
+  return TargetKindRegistry::Global()->ListAllNames();
+}
 
 TargetKindRegEntry& TargetKindRegEntry::RegisterOrGet(const String& target_kind_name) {
   return TargetKindRegistry::Global()->RegisterOrGet(target_kind_name);
@@ -98,7 +103,7 @@ static int ExtractIntWithPrefix(const std::string& str, const std::string& prefi
  * \param val The detected value
  * \return A boolean indicating if detection succeeds
  */
-static bool DetectDeviceFlag(TVMContext device, runtime::DeviceAttrKind flag, TVMRetValue* val) {
+static bool DetectDeviceFlag(Device device, runtime::DeviceAttrKind flag, TVMRetValue* val) {
   using runtime::DeviceAPI;
   DeviceAPI* api = DeviceAPI::Get(device, true);
   // Check if compiled with the corresponding device api
@@ -122,7 +127,7 @@ void CheckOrSetAttr(Map<String, ObjectRef>* attrs, const String& name, const Str
     attrs->Set(name, value);
   } else {
     const auto* str = (*iter).second.as<StringObj>();
-    CHECK(str != nullptr && GetRef<String>(str) == value)
+    ICHECK(str != nullptr && GetRef<String>(str) == value)
         << "ValueError: Expects \"" << name << "\" to be \"" << value
         << "\", but gets: " << (*iter).second;
   }
@@ -143,11 +148,11 @@ Map<String, ObjectRef> UpdateNVPTXAttrs(Map<String, ObjectRef> attrs) {
     // If -mcpu has been specified, validate the correctness
     String mcpu = Downcast<String>(attrs.at("mcpu"));
     arch = ExtractIntWithPrefix(mcpu, "sm_");
-    CHECK(arch != -1) << "ValueError: NVPTX target gets an invalid CUDA arch: -mcpu=" << mcpu;
+    ICHECK(arch != -1) << "ValueError: NVPTX target gets an invalid CUDA arch: -mcpu=" << mcpu;
   } else {
     // Use the compute version of the first CUDA GPU instead
     TVMRetValue version;
-    if (!DetectDeviceFlag({kDLGPU, 0}, runtime::kComputeVersion, &version)) {
+    if (!DetectDeviceFlag({kDLCUDA, 0}, runtime::kComputeVersion, &version)) {
       LOG(WARNING) << "Unable to detect CUDA version, default to \"-mcpu=sm_20\" instead";
       arch = 20;
     } else {
@@ -170,7 +175,7 @@ Map<String, ObjectRef> UpdateROCmAttrs(Map<String, ObjectRef> attrs) {
   if (attrs.count("mcpu")) {
     String mcpu = Downcast<String>(attrs.at("mcpu"));
     arch = ExtractIntWithPrefix(mcpu, "gfx");
-    CHECK(arch != -1) << "ValueError: ROCm target gets an invalid GFX version: -mcpu=" << mcpu;
+    ICHECK(arch != -1) << "ValueError: ROCm target gets an invalid GFX version: -mcpu=" << mcpu;
   } else {
     TVMRetValue val;
     if (!DetectDeviceFlag({kDLROCM, 0}, runtime::kGcnArch, &val)) {
@@ -213,23 +218,31 @@ TVM_REGISTER_TARGET_KIND("llvm", kDLCPU)
     .add_attr_option<String>("mfloat-abi")
     .add_attr_option<Bool>("system-lib")
     .add_attr_option<String>("runtime")
+    .add_attr_option<Bool>("link-params", Bool(false))
     .set_default_keys({"cpu"});
 
 TVM_REGISTER_TARGET_KIND("c", kDLCPU)
     .add_attr_option<Bool>("system-lib")
+    .add_attr_option<Bool>("link-params", Bool(false))
     .add_attr_option<String>("runtime")
     .add_attr_option<String>("mcpu")
+    .add_attr_option<String>("march")
+    .add_attr_option<String>("executor")
+    .add_attr_option<Integer>("workspace-byte-alignment")
     .set_default_keys({"cpu"});
 
-TVM_REGISTER_TARGET_KIND("cuda", kDLGPU)
+TVM_REGISTER_TARGET_KIND("cuda", kDLCUDA)
     .add_attr_option<String>("mcpu")
     .add_attr_option<String>("arch")
     .add_attr_option<Bool>("system-lib")
     .add_attr_option<Integer>("max_num_threads", Integer(1024))
     .add_attr_option<Integer>("thread_warp_size", Integer(32))
+    .add_attr_option<Integer>("shared_memory_per_block")
+    .add_attr_option<Integer>("registers_per_block")
+    .add_attr_option<Integer>("max_threads_per_block")
     .set_default_keys({"cuda", "gpu"});
 
-TVM_REGISTER_TARGET_KIND("nvptx", kDLGPU)
+TVM_REGISTER_TARGET_KIND("nvptx", kDLCUDA)
     .add_attr_option<String>("mcpu")
     .add_attr_option<String>("mtriple")
     .add_attr_option<Bool>("system-lib")
@@ -297,8 +310,10 @@ TVM_REGISTER_TARGET_KIND("ext_dev", kDLExtDev)  // line break
 TVM_REGISTER_TARGET_KIND("hybrid", kDLCPU)  // line break
     .add_attr_option<Bool>("system-lib");
 
-TVM_REGISTER_TARGET_KIND("composite", kDLCPU)
-    .add_attr_option<Target>("target_host")
-    .add_attr_option<Array<Target>>("devices");
+TVM_REGISTER_TARGET_KIND("composite", kDLCPU).add_attr_option<Array<Target>>("devices");
+
+/**********  Registry  **********/
+
+TVM_REGISTER_GLOBAL("target.ListTargetKinds").set_body_typed(TargetKindRegEntry::ListTargetKinds);
 
 }  // namespace tvm

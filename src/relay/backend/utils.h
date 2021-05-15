@@ -37,11 +37,58 @@
 #include <typeinfo>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
+
+#include "../../runtime/meta_data.h"
 
 namespace tvm {
 namespace relay {
 namespace backend {
+
+struct FunctionInfoNode : public Object {
+  Map<Target, Integer> workspace_sizes;
+  Map<Target, Integer> io_sizes;
+  Map<Target, Integer> constant_sizes;
+  Map<Target, tir::PrimFunc> tir_primfuncs;
+  Map<Target, Function> relay_primfuncs;
+
+  void VisitAttrs(tvm::AttrVisitor* v) {
+    v->Visit("workspace_sizes", &workspace_sizes);
+    v->Visit("io_sizes", &io_sizes);
+    v->Visit("constant_sizes", &constant_sizes);
+    v->Visit("tir_primfuncs", &tir_primfuncs);
+    v->Visit("relay_primfuncs", &relay_primfuncs);
+  }
+
+  static constexpr const char* _type_key = "relay.backend.FunctionInfo";
+  TVM_DECLARE_FINAL_OBJECT_INFO(FunctionInfoNode, Object);
+};
+
+class FunctionInfo : public ObjectRef {
+ public:
+  TVM_DEFINE_MUTABLE_OBJECT_REF_METHODS(FunctionInfo, ObjectRef, FunctionInfoNode);
+};
+
+/*!
+ * \brief Calculate the storage required to store the type of relay.Expr
+ *
+ * \param func The relay expr for which the storage is calculated
+ */
+int64_t CalculateRelayExprSizeBytes(const Type& expr_type);
+
+/*!
+ *  \brief Executor generator artifacts. Those artifacts  are subsequently
+ *  used by the relay build process.
+ */
+struct LoweredOutput {
+  std::string graph_json;
+  Map<String, IRModule> lowered_funcs;
+  Array<tvm::runtime::Module> external_mods;
+  Map<String, FunctionInfo> function_metadata;
+  std::unordered_map<std::string, std::pair<int, const tvm::runtime::NDArray>> params;
+  runtime::Metadata metadata;
+};
 
 /*!
  * \brief A helper to expand the params by adding the ones used in a given expression.
@@ -64,6 +111,37 @@ struct ConstantUpdater : public ExprVisitor {
 };
 
 /*!
+ * \brief A function to update the params with constants found in an external function.
+ * \param func The function from which to get the constant params.
+ * \param params The params to update with the constants.
+ */
+inline void UpdateConstants(Function func,
+                            std::unordered_map<std::string, runtime::NDArray>* params) {
+  auto codegen = func->GetAttr<String>(attr::kCompiler);
+  ICHECK(codegen.defined()) << "No external codegen is set";
+  std::string codegen_name = codegen.value();
+  const auto name_node = func->GetAttr<String>(tvm::attr::kGlobalSymbol);
+  std::string symbol = std::string(name_node.value());
+  std::string const_update_name = "relay.ext." + codegen_name + ".constant_updater";
+  // Get the constant updater for the external codegen
+  auto pf = tvm::runtime::Registry::Get(const_update_name);
+  // If the backend hasn't registered a constant updater, use a default one
+  if (pf == nullptr) {
+    ConstantUpdater const_visit(symbol, params);
+    const_visit(func);
+  } else {
+    Map<String, tvm::runtime::NDArray> constants = (*pf)(func, symbol);
+    for (const auto& it : constants) {
+      std::string const_name(it.first);
+      // Constant names should begin this the compiler name (to avoid conflicts)
+      ICHECK(const_name.find(codegen_name) == 0)
+          << "External constant names must start with compiler name";
+      (*params)[const_name] = it.second;
+    }
+  }
+}
+
+/*!
  * \brief A simple wrapper around ExprFunctor for a single argument case.
  *  The result of visit is memoized.
  */
@@ -81,7 +159,7 @@ class MemoizedExprTranslator : public ::tvm::relay::ExprFunctor<OutputType(const
    * \return The result of the call
    */
   virtual OutputType VisitExpr(const Expr& n) {
-    CHECK(n.defined());
+    ICHECK(n.defined());
     auto it = memo_.find(n);
     if (it != memo_.end()) {
       return it->second;
@@ -115,7 +193,7 @@ inline const PackedFunc* GetPackedFunc(const std::string& func_name) {
 template <typename R, typename... Args>
 inline const runtime::TypedPackedFunc<R(Args...)> GetTypedPackedFunc(const std::string& func_name) {
   auto* pf = GetPackedFunc(func_name);
-  CHECK(pf != nullptr) << "can not find packed function";
+  ICHECK(pf != nullptr) << "can not find packed function";
   return runtime::TypedPackedFunc<R(Args...)>(*pf);
 }
 
@@ -129,8 +207,7 @@ inline std::vector<int64_t> GetIntShape(const Array<IndexExpr>& shape) {
   std::vector<int64_t> ret;
   for (const auto& dim : shape) {
     const int64_t* pval = tir::as_const_int(dim);
-    CHECK(pval) << "Expect integer, but received: " << dim->GetTypeKey();
-    ret.push_back(*pval);
+    ret.push_back(pval ? *pval : -1);
   }
   return ret;
 }
@@ -149,8 +226,12 @@ inline std::string DType2String(const tvm::DataType dtype) {
     os << "int";
   } else if (dtype.is_uint()) {
     os << "uint";
+  } else if ((*GetPackedFunc("runtime._datatype_get_type_registered"))(dtype.code())) {
+    os << "custom["
+       << (*GetPackedFunc("runtime._datatype_get_type_name"))(dtype.code()).operator std::string()
+       << "]";
   } else {
-    LOG(FATAL) << "Unknown type";
+    LOG(FATAL) << "Unknown type with code " << static_cast<unsigned>(dtype.code());
   }
   os << dtype.bits();
   return os.str();
@@ -188,8 +269,8 @@ inline relay::Function BindParamsByName(
   }
   Expr bound_expr = relay::Bind(func, bind_dict);
   Function ret = Downcast<Function>(bound_expr);
-  CHECK(ret.defined()) << "The returning type is expected to be a Relay Function."
-                       << "\n";
+  ICHECK(ret.defined()) << "The returning type is expected to be a Relay Function."
+                        << "\n";
   return ret;
 }
 
@@ -200,11 +281,11 @@ inline relay::Function BindParamsByName(
  */
 inline std::vector<int> GetShape(const Type& type) {
   const auto* ttype = type.as<TensorTypeNode>();
-  CHECK(ttype) << "Expect TensorTypeNode";
+  ICHECK(ttype) << "Expect TensorTypeNode";
   std::vector<int> shape;
   for (size_t i = 0; i < ttype->shape.size(); ++i) {
     auto* val = ttype->shape[i].as<IntImmNode>();
-    CHECK(val);
+    ICHECK(val);
     shape.push_back(val->value);
   }
   return shape;
@@ -219,7 +300,7 @@ inline std::vector<int> GetShape(const Type& type) {
  */
 inline bool IsOp(const CallNode* call, const std::string& op_name) {
   const auto* op_node = call->op.as<OpNode>();
-  CHECK(op_node) << "Expects a single op.";
+  ICHECK(op_node) << "Expects a single op.";
   Op op = GetRef<Op>(op_node);
   return op == Op::Get(op_name);
 }
@@ -235,14 +316,14 @@ inline bool IsOp(const CallNode* call, const std::string& op_name) {
 
 inline const CallNode* GetRootCall(const CallNode* current_call, int depth,
                                    const std::vector<std::string>& expected_op_names) {
-  CHECK(current_call && depth >= 0 && static_cast<size_t>(depth) < expected_op_names.size() &&
-        IsOp(current_call, expected_op_names[depth]));
+  ICHECK(current_call && depth >= 0 && static_cast<size_t>(depth) < expected_op_names.size() &&
+         IsOp(current_call, expected_op_names[depth]));
 
   if (depth == 0) {
     return current_call;
   }
 
-  CHECK_GT(current_call->args.size(), 0);
+  ICHECK_GT(current_call->args.size(), 0);
 
   const auto* next_call = current_call->args[0].as<CallNode>();
   return GetRootCall(next_call, depth - 1, expected_op_names);
@@ -256,8 +337,26 @@ inline const CallNode* GetRootCall(const CallNode* current_call, int depth,
  */
 inline std::string GetExtSymbol(const Function& func) {
   const auto name_node = func->GetAttr<String>(tvm::attr::kGlobalSymbol);
-  CHECK(name_node.defined()) << "Fail to retrieve external symbol.";
+  ICHECK(name_node.defined()) << "Fail to retrieve external symbol.";
   return std::string(name_node.value());
+}
+
+/*!
+ * \brief Return whether the auto scheduler is enabled in the pass context.
+ */
+inline bool IsAutoSchedulerEnabled() {
+  return transform::PassContext::Current()
+      ->GetConfig<Bool>("relay.backend.use_auto_scheduler", Bool(false))
+      .value();
+}
+
+/*!
+ * \brief Return whether the compile engine cache is disabled in the pass context.
+ */
+inline bool IsCompileEngineCacheDisabled() {
+  return transform::PassContext::Current()
+      ->GetConfig<Bool>("relay.backend.disable_compile_engine_cache", Bool(false))
+      .value();
 }
 
 }  // namespace backend

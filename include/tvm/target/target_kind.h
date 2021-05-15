@@ -197,6 +197,11 @@ class TargetKindRegEntry {
   /*! \brief Set name of the TargetKind to be the same as registry if it is empty */
   inline TargetKindRegEntry& set_name();
   /*!
+   * \brief List all the entry names in the registry.
+   * \return The entry names.
+   */
+  TVM_DLL static Array<String> ListTargetKinds();
+  /*!
    * \brief Register or get a new entry.
    * \param target_kind_name The name of the TargetKind.
    * \return the corresponding entry.
@@ -295,7 +300,7 @@ inline TargetKindAttrMap<ValueType> TargetKind::GetAttrMap(const String& attr_na
 template <typename ValueType>
 inline TargetKindRegEntry& TargetKindRegEntry::set_attr(const String& attr_name,
                                                         const ValueType& value, int plevel) {
-  CHECK_GT(plevel, 0) << "plevel in set_attr must be greater than 0";
+  ICHECK_GT(plevel, 0) << "plevel in set_attr must be greater than 0";
   runtime::TVMRetValue rv;
   rv = value;
   UpdateAttr(attr_name, rv, plevel);
@@ -321,7 +326,7 @@ inline TargetKindRegEntry& TargetKindRegEntry::set_attrs_preprocessor(FLambda f)
 
 template <typename ValueType>
 inline TargetKindRegEntry& TargetKindRegEntry::add_attr_option(const String& key) {
-  CHECK(!kind_->key2vtype_.count(key))
+  ICHECK(!kind_->key2vtype_.count(key))
       << "AttributeError: add_attr_option failed because '" << key << "' has been set once";
   kind_->key2vtype_[key] = detail::ValueTypeInfoMaker<ValueType>()();
   return *this;
@@ -371,7 +376,8 @@ inline TargetKindRegEntry& TargetKindRegEntry::set_name() {
           .add_attr_option<String>("tag")                         \
           .add_attr_option<String>("device")                      \
           .add_attr_option<String>("model")                       \
-          .add_attr_option<Array<String>>("libs")
+          .add_attr_option<Array<String>>("libs")                 \
+          .add_attr_option<Target>("host")
 
 }  // namespace tvm
 

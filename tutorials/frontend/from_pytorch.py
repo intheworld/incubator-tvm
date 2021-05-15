@@ -28,8 +28,8 @@ A quick solution is to install via pip
 
 .. code-block:: bash
 
-    pip install torch==1.4.0
-    pip install torchvision==0.5.0
+    pip install torch==1.7.0
+    pip install torchvision==0.8.1
 
 or please refer to official site
 https://pytorch.org/get-started/locally/
@@ -37,7 +37,7 @@ https://pytorch.org/get-started/locally/
 PyTorch versions should be backwards compatible but should be used
 with the proper TorchVision version.
 
-Currently, TVM supports PyTorch 1.4 and 1.3. Other versions may
+Currently, TVM supports PyTorch 1.7 and 1.4. Other versions may
 be unstable.
 """
 
@@ -70,7 +70,7 @@ scripted_model = torch.jit.trace(model, input_data).eval()
 # Classic cat example!
 from PIL import Image
 
-img_url = "https://github.com/dmlc/mxnet.js/blob/master/data/cat.png?raw=true"
+img_url = "https://github.com/dmlc/mxnet.js/blob/main/data/cat.png?raw=true"
 img_path = download_testdata(img_url, "cat.png", module="data")
 img = Image.open(img_path).resize((224, 224))
 
@@ -100,20 +100,19 @@ mod, params = relay.frontend.from_pytorch(scripted_model, shape_list)
 # Relay Build
 # -----------
 # Compile the graph to llvm target with given input specification.
-target = "llvm"
-target_host = "llvm"
-ctx = tvm.cpu(0)
+target = tvm.target.Target("llvm", host="llvm")
+dev = tvm.cpu(0)
 with tvm.transform.PassContext(opt_level=3):
-    lib = relay.build(mod, target=target, target_host=target_host, params=params)
+    lib = relay.build(mod, target=target, params=params)
 
 ######################################################################
 # Execute the portable graph on TVM
 # ---------------------------------
 # Now we can try deploying the compiled model on target.
-from tvm.contrib import graph_runtime
+from tvm.contrib import graph_executor
 
 dtype = "float32"
-m = graph_runtime.GraphModule(lib["default"](ctx))
+m = graph_executor.GraphModule(lib["default"](dev))
 # Set inputs
 m.set_input(input_name, tvm.nd.array(img.astype(dtype)))
 # Execute

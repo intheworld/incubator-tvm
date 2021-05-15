@@ -52,10 +52,10 @@ cpptest:
 	@mkdir -p $(OUTPUTDIR) && cd $(OUTPUTDIR) && cmake .. && $(MAKE) cpptest
 
 crttest:
-	@mkdir -p build && cd build && cmake .. && $(MAKE) crttest
+	@mkdir -p $(OUTPUTDIR) && cd $(OUTPUTDIR) && cmake .. && $(MAKE) crttest
 
 # EMCC; Web related scripts
-EMCC_FLAGS= -std=c++11 -DDMLC_LOG_STACK_TRACE=0\
+EMCC_FLAGS= -std=c++11\
 	-Oz -s RESERVED_FUNCTION_POINTERS=2 -s MAIN_MODULE=1 -s NO_EXIT_RUNTIME=1\
 	-s TOTAL_MEMORY=1073741824\
 	-s EXTRA_EXPORTED_RUNTIME_METHODS="['addFunction','cwrap','getValue','setValue']"\
@@ -135,6 +135,11 @@ jvminstall:
 		mvn install -P$(JVM_PKG_PROFILE) -Dcxx="$(CXX)" \
 			-Dcflags="$(PKG_CFLAGS)" -Dldflags="$(PKG_LDFLAGS)" \
 			-Dcurrent_libdir="$(ROOTDIR)/$(OUTPUTDIR)" $(JVM_TEST_ARGS))
+format:
+	./tests/lint/git-clang-format.sh -i origin/main
+	black .
+	cd rust; which cargo && cargo fmt --all; cd ..
+
 
 # clean rule
 clean:

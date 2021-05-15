@@ -32,7 +32,7 @@
 
 #include "../../arith/interval_set.h"
 #include "../../runtime/thread_storage_scope.h"
-#include "ir_util.h"
+#include "ir_utils.h"
 
 namespace tvm {
 namespace tir {
@@ -168,7 +168,7 @@ class HoistCandidateSelector final : public StmtExprVisitor {
     // To stop hoisting if any of the block variables are used.
     //
     // In case we want to use hoisting in between certain passes
-    // which have interdependencies of the postioning of if nodes with scope var
+    // which have interdependencies of the positioning of if nodes with scope var
     // it is better to disable this section
     if (support_block_scope_hosting_) {
       if (IsRecordingOn()) {
@@ -248,7 +248,7 @@ class HoistCandidateSelector final : public StmtExprVisitor {
  private:
   void ResetRecorderInternal() {
     if (is_recorder_on_) {
-      CHECK_GT(ordered_list_.size(), 0);
+      ICHECK_GT(ordered_list_.size(), 0);
       is_recorder_on_ = false;
     }
     ordered_list_.clear();

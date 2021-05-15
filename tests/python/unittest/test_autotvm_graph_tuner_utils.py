@@ -18,7 +18,7 @@
 # NOTE: We name this test file to start with test_graph_tuner
 # to make it execute after zero_rank tensor test cases. This
 # helps avoid topi arithmetic operator overloading issue:
-# https://github.com/apache/incubator-tvm/issues/3240
+# https://github.com/apache/tvm/issues/3240
 # TODO: restore the file name after this issue is resolved.
 import tvm
 from tvm import te
@@ -107,6 +107,16 @@ def test_get_direct_ancestor():
     visited_dict = {}
     input_names = ["data"]
     out = get_direct_ancestor(node_list, visited_dict, target_ops, 5, input_names)
+    assert out == [0], "Output mismatch: expecting [0] but got %s." % str(out)
+
+    # non-regression test
+    out = relay.add(relay.log(data), relay.sqrt(data))
+    net = relay.Function(relay.analysis.free_vars(out), out)
+    net = bind_inputs(net, {"data": (1, 16, 224, 224)})
+    node_list = []
+    node_dict = {}
+    expr2graph(net, target_ops, node_dict, node_list)
+    out = get_direct_ancestor(node_list, visited_dict, target_ops, 3, input_names)
     assert out == [0], "Output mismatch: expecting [0] but got %s." % str(out)
 
 

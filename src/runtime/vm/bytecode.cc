@@ -22,9 +22,8 @@
  * \brief The bytecode for Relay virtual machine.
  */
 
-#include <dmlc/logging.h>
+#include <tvm/runtime/logging.h>
 #include <tvm/runtime/vm/bytecode.h>
-#include <tvm/support/logging.h>
 
 #include <sstream>
 
